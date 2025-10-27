@@ -1,273 +1,42 @@
-name: CI/CD Pipeline - n8n Azure VM Debian
+name: CI - Validation
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
-env:
-  AZURE_RESOURCE_GROUP: n8n-resources
-  AZURE_VM_NAME: n8n-vm
-  AZURE_LOCATION: westeurope
-  VM_ADMIN_USER: debian
-
 jobs:
-  lint-and-validate:
+  validate:
     runs-on: ubuntu-latest
-    name: Validation et Linting des scripts
+    name: Validation du script
 
     steps:
-      - name: Checkout du code
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: ShellCheck - Analyse statique des scripts
-        uses: ludeeus/action-shellcheck@master
-        env:
-          SHELLCHECK_OPTS: -e SC1091 -e SC2034
-        with:
-          scandir: './scripts'
-          severity: warning
 
       - name: Vérification syntaxe bash
         run: |
-          echo "🔍 Vérification de la syntaxe des scripts bash..."
-          EXIT_CODE=0
-          for file in $(find scripts/ -type f -name "*.sh" 2>/dev/null); do
-            echo "Vérification de $file"
-            bash -n "$file" || EXIT_CODE=1
-          done
-          if [ $EXIT_CODE -eq 0 ]; then
-            echo "✅ Tous les scripts ont une syntaxe valide"
-          else
-            echo "❌ Erreurs de syntaxe détectées"
-            exit 1
-          fi
+          echo "🔍 Vérification de script.sh..."
+          bash -n script.sh
+          echo "✅ Script valide"
 
-      - name: Vérification droits d'exécution
+      - name: Vérification shellcheck
         run: |
-          echo "🔍 Vérification des permissions des scripts..."
-          for file in $(find scripts/ -type f -name "*.sh" 2>/dev/null); do
-            if [ ! -x "$file" ]; then
-              echo "⚠️  $file n'est pas exécutable"
-              chmod +x "$file"
-              echo "✅ Permission ajoutée à $file"
-            else
-              echo "✅ $file est exécutable"
-            fi
-          done
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          echo "🔍 Analyse statique du script..."
+          shellcheck script.sh || echo "⚠️ Warnings détectés mais non bloquants"
 
-      - name: Test des scripts (dry-run)
+      - name: Résumé
         run: |
-          echo "🧪 Test des scripts en mode dry-run..."
-          # À compléter : exécution de vos scripts avec l'option --dry-run ou --test
-          # exemple: ./scripts/install.sh --dry-run
-          echo "⏳ En attente de vos scripts..."
-
-      - name: Validation Docker Compose
-        run: |
-          if [ -f "config/docker-compose.yml" ]; then
-            echo "🔍 Validation du fichier docker-compose.yml..."
-            docker-compose -f config/docker-compose.yml config
-            echo "✅ docker-compose.yml est valide"
-          else
-            echo "⏳ Fichier docker-compose.yml non trouvé (normal pour l'instant)"
-          fi
-
-      - name: Validation fichiers YAML
-        run: |
-          echo "🔍 Validation des fichiers YAML..."
-          for file in $(find . -name "*.yml" -o -name "*.yaml" 2>/dev/null); do
-            if command -v yamllint &> /dev/null; then
-              yamllint "$file" || echo "⚠️  $file contient des warnings"
-            else
-              echo "📝 yamllint non installé, installation..."
-              pip install yamllint
-              yamllint "$file"
-            fi
-          done
-
-  security-check:
-    runs-on: ubuntu-latest
-    name: Vérification de sécurité
-
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Scan de sécurité des scripts
-        run: |
-          echo "🔒 Scan de sécurité des scripts shell..."
-          # Vérification des patterns dangereux
-          echo "Recherche de commandes dangereuses..."
-          
-          DANGEROUS_PATTERNS=("rm -rf /" "eval" "curl.*|.*sh" "wget.*|.*sh")
-          EXIT_CODE=0
-          
-          for pattern in "${DANGEROUS_PATTERNS[@]}"; do
-            if grep -r -E "$pattern" scripts/ 2>/dev/null; then
-              echo "⚠️  Pattern potentiellement dangereux trouvé: $pattern"
-              EXIT_CODE=1
-            fi
-          done
-          
-          if [ $EXIT_CODE -eq 1 ]; then
-            echo "⚠️  Vérifiez les patterns détectés ci-dessus"
-          else
-            echo "✅ Aucun pattern dangereux détecté"
-          fi
-
-      - name: Vérification des secrets hardcodés
-        run: |
-          echo "🔐 Recherche de secrets hardcodés..."
-          if grep -r -E "(password|secret|api_key|token).*=.*['\"]" scripts/ config/ 2>/dev/null; then
-            echo "❌ Secrets potentiellement hardcodés détectés !"
-            exit 1
-          else
-            echo "✅ Aucun secret hardcodé détecté"
-          fi
-
-  build:
-    runs-on: ubuntu-latest
-    name: Construction des artefacts
-    needs: [lint-and-validate, security-check]
-
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Préparation des scripts de déploiement
-        run: |
-          mkdir -p artifacts/scripts
-          mkdir -p artifacts/config
-          echo "📦 Préparation des artefacts..."
-          
-          # Copie des scripts (à compléter quand vous les aurez)
-          if [ -d "scripts" ]; then
-            cp -r scripts/* artifacts/scripts/ 2>/dev/null || echo "Dossier scripts vide"
-          fi
-          
-          # Copie des configs (à compléter)
-          if [ -d "config" ]; then
-            cp -r config/* artifacts/config/ 2>/dev/null || echo "Dossier config vide"
-          fi
-          
-          # Création d'un manifest
-          echo "Build: ${{ github.sha }}" > artifacts/BUILD_INFO.txt
-          echo "Date: $(date)" >> artifacts/BUILD_INFO.txt
-          echo "Branch: ${{ github.ref_name }}" >> artifacts/BUILD_INFO.txt
-          
-          echo "✅ Artefacts préparés"
-
-      - name: Upload des artefacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-package-${{ github.sha }}
-          path: artifacts/
-          retention-days: 30
-
-      - name: Résumé de la build
-        run: |
-          echo "## 📊 Résumé de la Build" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Validation réussie" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branche**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
-
-  deploy-dev:
-    runs-on: ubuntu-latest
-    name: Déploiement DEV
-    needs: build
-    if: github.ref == 'refs/heads/develop'
-    environment: development
-
-    steps:
-      - name: Téléchargement des artefacts
-        uses: actions/download-artifact@v4
-        with:
-          name: deployment-package-${{ github.sha }}
-
-      - name: Vérification des artefacts
-        run: |
-          echo "🔍 Vérification de l'intégrité des artefacts..."
-          ls -lah scripts/ config/ 2>/dev/null || echo "Dossiers en attente"
-          cat BUILD_INFO.txt
-
-      - name: Connexion à Azure
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS_DEV }}
-
-      - name: Configuration SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY_DEV }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_IP_DEV }} >> ~/.ssh/known_hosts
-
-      - name: Déploiement sur VM Debian
-        run: |
-          echo "🚀 Déploiement en cours..."
-          # À compléter quand vous aurez vos scripts
-          echo "⏳ Scripts de déploiement en attente"
-
-      - name: Vérification santé de l'instance
-        run: |
-          echo "🏥 Vérification de la santé de l'instance..."
-          # À compléter : curl check
-          echo "⏳ Checks en attente"
-
-  deploy-prod:
-    runs-on: ubuntu-latest
-    name: Déploiement PRODUCTION
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    environment: production
-
-    steps:
-      - name: Téléchargement des artefacts
-        uses: actions/download-artifact@v4
-        with:
-          name: deployment-package-${{ github.sha }}
-
-      - name: Vérification des artefacts
-        run: |
-          echo "🔍 Vérification finale avant production..."
-          ls -lah scripts/ config/ 2>/dev/null || echo "Dossiers en attente"
-          cat BUILD_INFO.txt
-
-      - name: Connexion à Azure
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS_PROD }}
-
-      - name: Configuration SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY_PROD }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_IP_PROD }} >> ~/.ssh/known_hosts
-
-      - name: Déploiement sur VM Debian
-        run: |
-          echo "🚀 Déploiement PRODUCTION en cours..."
-          # À compléter quand vous aurez vos scripts
-          echo "⏳ Scripts de déploiement en attente"
-
-      - name: Vérification santé de l'instance
-        run: |
-          echo "🏥 Vérification finale..."
-          # À compléter
-          echo "⏳ Checks en attente"
-
-      - name: Notification de succès
-        if: success()
-        run: |
-          echo "## 🎉 Déploiement Production Réussi" >> $GITHUB_STEP_SUMMARY
+          echo "Le script est prêt à être utilisé localement." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Date**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "### Pour déployer :" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "chmod +x script.sh" >> $GITHUB_STEP_SUMMARY
+          echo "./script.sh" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

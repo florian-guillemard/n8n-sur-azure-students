@@ -1,35 +1,90 @@
-# n8n Azure Deployment - Automatisation Complète
+# n8n Azure Deployment
 
 ## 📋 Description
 
-Ce projet permet de déployer automatiquement une instance n8n sur Azure en utilisant Terraform, Docker et Git. Avec un simple script, les utilisateurs peuvent créer leur propre instance n8n en quelques minutes.
+Script de déploiement de n8n sur Azure VM. Chaque utilisateur lance le script sur sa propre machine avec son compte Azure.
 
-## 🎯 Objectif
+## 🚀 Utilisation
 
-Automatiser le déploiement d'instances n8n personnalisées sur Azure avec une configuration minimale. Chaque utilisateur peut avoir sa propre instance isolée et sécurisée.
+### Prérequis
 
-## 🛠️ Technologies Utilisées
+1. Installer Azure CLI :
+```bash
+brew update && brew install azure-cli
+```
 
-- **Azure**: Hébergement cloud (Container Instances, Storage, Virtual Network)
-- **Terraform**: Infrastructure as Code pour provisionner les ressources Azure
-- **Docker**: Conteneurisation de n8n
-- **Git**: Versioning et distribution du projet
-- **n8n**: Plateforme d'automatisation workflow
+2. Se connecter à Azure :
+```bash
+az login
+```
 
-## 📦 Prérequis
+### Déploiement
 
-Avant de commencer, assurez-vous d'avoir installé:
+1. Cloner le repo :
+```bash
+git clone <url-du-repo>
+cd n8n-sur-ton-poste
+```
 
-- [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) (version 2.30+)
-- [Terraform](https://www.terraform.io/downloads) (version 1.0+)
-- [Docker](https://docs.docker.com/get-docker/) (version 20.10+)
-- [Git](https://git-scm.com/downloads)
-- Un compte Azure avec un abonnement actif
+2. Rendre le script exécutable :
+```bash
+chmod +x script.sh
+```
 
-## 📞 Support
+3. Lancer le déploiement :
+```bash
+./script.sh
+```
 
-- **Issues**: [GitHub Issues](https://github.com/votre-organisation/n8n-azure-deploy/issues)
-- **Documentation n8n**: [docs.n8n.io](https://docs.n8n.io)
-- **Documentation Azure**: [docs.microsoft.com](https://docs.microsoft.com/azure)
+Le script va :
+- ✅ Créer un groupe de ressources Azure
+- ✅ Créer une VM Debian
+- ✅ Afficher l'IP publique
+- ✅ Vous connecter automatiquement en SSH
+
+### Après la connexion SSH
+
+Une fois connecté à la VM, installez n8n :
+
+```bash
+# Installation de Docker
+sudo apt-get update
+sudo apt-get install -y curl
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+
+# Installation de Docker Compose
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Création du docker-compose pour n8n
+mkdir -p ~/n8n-data
+cat > ~/docker-compose.yml << 'EOF'
+version: '3.8'
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    volumes:
+      - ./n8n-data:/home/node/.n8n
+EOF
+
+# Démarrage de n8n
+sudo docker-compose up -d
+```
+
+## 🌐 Accès à n8n
+
+Votre instance sera accessible sur : `http://VOTRE_IP:5678`
+
+Les identifiants seront créés lors de la première connexion dans le navigateur.
+
+## 🛠️ Technologies
+
+- Azure VM (Debian 11)
+- Docker & Docker Compose
+- n8n
 
 
