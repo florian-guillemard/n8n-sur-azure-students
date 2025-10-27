@@ -1,0 +1,154 @@
+name: CI/CD Pipeline - n8n Azure VM Debian
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AZURE_RESOURCE_GROUP: n8n-resources
+  AZURE_VM_NAME: n8n-vm
+  AZURE_LOCATION: westeurope
+  VM_ADMIN_USER: debian
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    name: Validation du code
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Vérification syntaxe shell scripts
+        run: |
+          echo "Validation des scripts shell"
+          # À compléter : shellcheck de vos scripts
+          # find . -name "*.sh" -exec shellcheck {} \;
+
+      - name: Validation Docker Compose
+        run: |
+          echo "Validation docker-compose.yml"
+          # À compléter quand vous aurez le docker-compose
+          # docker-compose config
+
+  build:
+    runs-on: ubuntu-latest
+    name: Construction des artefacts
+    needs: validate
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Préparation des scripts de déploiement
+        run: |
+          mkdir -p artifacts/scripts
+          mkdir -p artifacts/config
+          echo "Copie des fichiers de déploiement"
+          # À compléter : copie de vos scripts
+          # cp scripts/*.sh artifacts/scripts/
+          # cp config/docker-compose.yml artifacts/config/
+
+      - name: Upload des artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package
+          path: artifacts/
+          retention-days: 30
+
+  deploy-dev:
+    runs-on: ubuntu-latest
+    name: Déploiement DEV
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+
+    steps:
+      - name: Téléchargement des artefacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-package
+
+      - name: Connexion à Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_DEV }}
+
+      - name: Installation Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Configuration SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY_DEV }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VM_IP_DEV }} >> ~/.ssh/known_hosts
+
+      - name: Déploiement sur VM Debian
+        run: |
+          # Copie des scripts sur la VM
+          scp -r scripts/ config/ ${{ env.VM_ADMIN_USER }}@${{ secrets.VM_IP_DEV }}:~/n8n-deployment/
+          
+          # Exécution du script d'installation
+          ssh ${{ env.VM_ADMIN_USER }}@${{ secrets.VM_IP_DEV }} << 'EOF'
+            cd ~/n8n-deployment
+            chmod +x scripts/install.sh
+            # À compléter : ./scripts/install.sh
+          EOF
+
+      - name: Vérification santé de l'instance
+        run: |
+          echo "Vérification du déploiement"
+          # À compléter : curl check sur l'instance n8n
+
+  deploy-prod:
+    runs-on: ubuntu-latest
+    name: Déploiement PRODUCTION
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: Téléchargement des artefacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-package
+
+      - name: Connexion à Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_PROD }}
+
+      - name: Configuration SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY_PROD }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VM_IP_PROD }} >> ~/.ssh/known_hosts
+
+      - name: Déploiement sur VM Debian
+        run: |
+          scp -r scripts/ config/ ${{ env.VM_ADMIN_USER }}@${{ secrets.VM_IP_PROD }}:~/n8n-deployment/
+          
+          ssh ${{ env.VM_ADMIN_USER }}@${{ secrets.VM_IP_PROD }} << 'EOF'
+            cd ~/n8n-deployment
+            chmod +x scripts/install.sh
+            # À compléter : ./scripts/install.sh
+          EOF
+
+      - name: Vérification santé de l'instance
+        run: |
+          echo "Vérification du déploiement en production"
+          # À compléter : tests de santé
+
+      - name: Notification de succès
+        if: success()
+        run: |
+          echo "Déploiement production réussi"
