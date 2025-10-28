@@ -69,13 +69,12 @@ SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 # ============================================= Sélection Région =============================================
 echo ""
 echo "==> Vérification des régions autorisées..."
-
 # Récupération des régions depuis la policy (portable toutes versions)
 ALLOWED_REGIONS=$(az policy assignment list \
   --query "[?displayName=='Allowed resource deployment regions'].parameters.listOfAllowedLocations.value[]" \
   -o tsv 2>/dev/null || echo "")
 
-# Conversion en array PORTABLE (fonctionne sur Bash 3.2+ macOS et Linux)
+# Conversion en array PORTABLE
 POLICY_REGIONS=()
 if [ -n "$ALLOWED_REGIONS" ]; then
   while IFS=$'\n' read -r line; do
@@ -83,11 +82,11 @@ if [ -n "$ALLOWED_REGIONS" ]; then
   done <<< "$ALLOWED_REGIONS"
 fi
 
-# Fallback si récupération échoue (utilise tes régions connues)
+# Arrêt si aucune région récupérée dynamiquement
 if [ ${#POLICY_REGIONS[@]} -eq 0 ]; then
-  echo "⚠ Impossible de récupérer la policy dynamiquement"
-  echo "  Utilisation des régions par défaut (vérifiées manuellement)"
-  POLICY_REGIONS=("switzerlandnorth" "francecentral" "italynorth" "germanywestcentral" "spaincentral")
+  echo "ERREUR : Impossible de récupérer les régions autorisées depuis Azure Policy"
+  echo "  Vérifiez vos permissions et la présence d'une policy de localisation"
+  exit 1
 fi
 
 echo "Régions autorisées par Azure :"
