@@ -1,51 +1,139 @@
 #!/bin/bash
 set -euo pipefail
 
+# ============================================= Détection OS =============================================
 detect_os() {
   if [ "$(uname)" = "Darwin" ]; then
     echo "macOS"
   elif [ "$(uname -o 2>/dev/null)" = "Msys" ] || [ "$(uname -o 2>/dev/null)" = "Cygwin" ]; then
     echo "Windows"
   elif [ -f /etc/os-release ]; then
-    # Extraction de l'ID pour les distributions Linux
     . /etc/os-release
-    echo "$ID"
+    case "$ID" in
+      ubuntu) echo "ubuntu" ;;
+      debian) echo "debian" ;;
+      fedora) echo "fedora" ;;
+      centos) echo "centos" ;;
+      arch) echo "arch" ;;
+      *) echo "unsupported" ;;
+    esac
   else
-    echo "unknown"
+    echo "unsupported"
   fi
 }
 
 os=$(detect_os)
 
+if [ "$os" = "unsupported" ]; then
+  echo "ERREUR : Votre OS n'est pas inclus dans les distributions prises en charge."
+  echo "Merci de voir avec le professeur pour une assistance adaptée."
+  exit 1
+fi
+
 case "$os" in
   macOS)
-    brew update && brew install azure-cli
+    if ! command -v az &> /dev/null; then
+      echo "Installation Azure CLI sur macOS..."
+      brew update && brew install azure-cli
+    fi
     ;;
   ubuntu|debian)
-    curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+    if ! command -v az &> /dev/null; then
+      echo "Installation Azure CLI sur $os..."
+      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+    fi
     ;;
-  windows)
-    # Pour Windows avec Git Bash ou PowerShell. Recommandé : WinGet
+  fedora|centos|arch)
+    if ! command -v az &> /dev/null; then
+      echo "Installation Azure CLI sur $os..."
+      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+    fi
+    ;;
+  Windows)
     echo "Utilisez la commande suivante dans PowerShell :"
     echo 'winget install -e --id Microsoft.AzureCLI'
-    ;;
-  *)
-    echo "OS non supporté par ce script."
-    exit 1
+    exit 0
     ;;
 esac
 
-# Mise à jour et connexion Azure (valide partout où az est installé)
-az upgrade
-az login
+# ============================================= Connexion Azure =============================================
+echo "==> Mise à jour Azure CLI..."
+az upgrade --yes 2>/dev/null || true
 
-# =============================================# Configuration# =============================================
+echo "==> Connexion à Azure..."
+if ! az account show &>/dev/null; then
+  az login
+fi
+
+# Récupération de l'ID de subscription
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+# ============================================= Sélection Région =============================================
+echo ""
+echo "==> Vérification des régions autorisées..."
+
+# Récupération des régions depuis la policy (portable toutes versions)
+ALLOWED_REGIONS=$(az policy assignment list \
+  --query "[?displayName=='Allowed resource deployment regions'].parameters.listOfAllowedLocations.value[]" \
+  -o tsv 2>/dev/null || echo "")
+
+# Conversion en array PORTABLE (fonctionne sur Bash 3.2+ macOS et Linux)
+POLICY_REGIONS=()
+if [ -n "$ALLOWED_REGIONS" ]; then
+  while IFS=$'\n' read -r line; do
+    [ -n "$line" ] && POLICY_REGIONS+=("$line")
+  done <<< "$ALLOWED_REGIONS"
+fi
+
+# Fallback si récupération échoue (utilise tes régions connues)
+if [ ${#POLICY_REGIONS[@]} -eq 0 ]; then
+  echo "⚠ Impossible de récupérer la policy dynamiquement"
+  echo "  Utilisation des régions par défaut (vérifiées manuellement)"
+  POLICY_REGIONS=("switzerlandnorth" "francecentral" "italynorth" "germanywestcentral" "spaincentral")
+fi
+
+echo "Régions autorisées par Azure :"
+printf '  ✓ %s\n' "${POLICY_REGIONS[@]}"
+
+# Ordre de préférence
+PREFERRED_REGIONS=("switzerlandnorth" "francecentral" "italynorth" "germanywestcentral" "spaincentral")
+LOCATION=""
+
+# Sélection de la première région préférée disponible
+for pref in "${PREFERRED_REGIONS[@]}"; do
+  for allowed in "${POLICY_REGIONS[@]}"; do
+    if [ "$pref" = "$allowed" ]; then
+      LOCATION="$pref"
+      break 2
+    fi
+  done
+done
+
+if [ -z "$LOCATION" ]; then
+  echo "ERREUR : Aucune région valide trouvée."
+  exit 1
+fi
+
+DISK_SKU="Standard_LRS"
+
+echo ""
+echo "=========================================="
+echo "Configuration de déploiement :"
+echo "  Région      : $LOCATION"
+echo "  Stockage    : $DISK_SKU"
+echo "  Abonnement  : $(az account show --query name -o tsv)"
+echo "  Subscription: $SUBSCRIPTION_ID"
+echo "=========================================="
+echo ""
+echo "⏱ Pause 5 secondes avant déploiement..."
+sleep 5
+
+# ============================================= Configuration =============================================
 BASENAME="projet-docker"
-LOCATION="francecentral"
 ADMIN_USER="devopsadmin"
 VM_SIZE="Standard_B2s"
 
-RG_NAME="${BASENAME}-rg-swe"
+RG_NAME="${BASENAME}-rg"
 VNET_NAME="${BASENAME}-vnet01"
 SUBNET_NAME="${BASENAME}-subnet01"
 NSG_NAME="${BASENAME}-nsg01"
@@ -53,7 +141,35 @@ PUBLIC_IP_NAME="${BASENAME}-ip01"
 NIC_NAME="${BASENAME}-nic01"
 VM_NAME="${BASENAME}-vm01"
 
-# =============================================# Cloud-init (YAML corrigé avec N8N_SECURE_COOKIE=false)# =============================================
+# ============================================= Resource Group =============================================
+echo "==> Vérification du groupe de ressources : $RG_NAME"
+
+# Vérification compatible avec set -e (portable)
+if az group show --name "$RG_NAME" &>/dev/null; then
+  EXISTING_LOC=$(az group show --name "$RG_NAME" --query location -o tsv)
+  echo "⚠ RG existant trouvé en région : $EXISTING_LOC"
+  
+  if [ "$EXISTING_LOC" != "$LOCATION" ]; then
+    echo "❌ Conflit de région détecté ! Suppression du RG..."
+    az group delete --name "$RG_NAME" --yes --no-wait
+    echo "⏱ Attente 45s pour suppression complète..."
+    sleep 45
+  else
+    echo "✓ RG déjà en bonne région ($EXISTING_LOC)"
+  fi
+fi
+
+echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
+az group create \
+  --name "$RG_NAME" \
+  --location "$LOCATION" \
+  --output none
+
+echo "✓ Resource Group prêt"
+echo "⏱ Pause 10s pour propagation Azure..."
+sleep 10
+
+# ============================================= Cloud-init =============================================
 read -r -d '' CLOUD_INIT_YAML << 'EOF' || true
 #cloud-config
 package_update: true
@@ -63,6 +179,7 @@ packages:
   - ca-certificates
   - curl
   - gnupg
+  - ufw
 
 groups:
   - docker
@@ -72,6 +189,7 @@ system_info:
     groups: [docker]
 
 runcmd:
+  # Installation Docker
   - mkdir -p /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   - chmod a+r /etc/apt/keyrings/docker.gpg
@@ -80,32 +198,43 @@ runcmd:
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   - systemctl enable docker
   - systemctl start docker
-  - docker run -d --name n8n -p 5678:5678 -e N8N_BASIC_AUTH_ACTIVE=true -e N8N_BASIC_AUTH_USER=admin -e N8N_BASIC_AUTH_PASSWORD=admin123 -e N8N_SECURE_COOKIE=false -v n8n_data:/home/node/.n8n --restart unless-stopped n8nio/n8n
+  
+  # Déploiement n8n avec volume corrigé
+  - docker run -d --name n8n -p 5678:5678 -e N8N_BASIC_AUTH_ACTIVE=true -e N8N_BASIC_AUTH_USER=admin -e N8N_BASIC_AUTH_PASSWORD=admin123 -e N8N_SECURE_COOKIE=false -v n8n_/home/node/.n8n --restart unless-stopped n8nio/n8n
+  
+  # Configuration SSH sur port 443 (en plus du 22)
   - sed -i 's/#Port 22/Port 22\nPort 443/' /etc/ssh/sshd_config
   - systemctl restart sshd
+  
+  # Firewall local (double sécurité avec NSG)
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp
+  - ufw allow 443/tcp
+  - ufw allow 5678/tcp
+  - ufw --force enable
 EOF
 
-# =============================================# Déploiement Azure# =============================================
-echo "==> Using subscription: $(az account show --query name -o tsv)"
-
-echo "==> Creating Resource Group: $RG_NAME ($LOCATION)"
-az group create --name "$RG_NAME" --location "$LOCATION" -o none
-
-echo "==> Creating VNet/Subnet"
+# ============================================= Réseau Azure =============================================
+echo ""
+echo "==> Création VNet/Subnet"
 az network vnet create \
   --resource-group "$RG_NAME" \
   --name "$VNET_NAME" \
+  --location "$LOCATION" \
   --address-prefix 10.0.0.0/16 \
   --subnet-name "$SUBNET_NAME" \
   --subnet-prefix 10.0.0.0/24 \
   -o none
 
-echo "==> Creating NSG + rules (22, 443, 5678)"
+echo "==> Création NSG"
 az network nsg create \
   --resource-group "$RG_NAME" \
   --name "$NSG_NAME" \
+  --location "$LOCATION" \
   -o none
 
+echo "==> Création règles NSG (SSH 22+443, n8n 5678)"
 az network nsg rule create \
   --resource-group "$RG_NAME" \
   --nsg-name "$NSG_NAME" \
@@ -128,36 +257,39 @@ az network nsg rule create \
   --access Allow \
   -o none
 
-echo "==> Creating Public IP (Standard/Static)"
+echo "==> Création IP publique (Standard/Statique)"
 az network public-ip create \
   --resource-group "$RG_NAME" \
   --name "$PUBLIC_IP_NAME" \
+  --location "$LOCATION" \
   --sku Standard \
   --allocation-method Static \
   -o none
 
-echo "==> Creating NIC (attach NSG + Public IP)"
+echo "==> Création NIC (attachement NSG + IP publique)"
 az network nic create \
   --resource-group "$RG_NAME" \
   --name "$NIC_NAME" \
+  --location "$LOCATION" \
   --vnet-name "$VNET_NAME" \
   --subnet "$SUBNET_NAME" \
   --public-ip-address "$PUBLIC_IP_NAME" \
   --network-security-group "$NSG_NAME" \
   -o none
 
-echo "==> Preparing cloud-init"
-CLOUD_INIT_B64=$(echo "$CLOUD_INIT_YAML" | base64 -w0)
-
-echo "==> Creating VM: $VM_NAME (Debian 11 Gen2)"
+# ============================================= Machine Virtuelle =============================================
+echo ""
+echo "==> Création VM : $VM_NAME (Debian 11 Gen2)"
 az vm create \
   --resource-group "$RG_NAME" \
   --name "$VM_NAME" \
+  --location "$LOCATION" \
   --nics "$NIC_NAME" \
   --image Debian11 \
   --size "$VM_SIZE" \
   --admin-username "$ADMIN_USER" \
   --generate-ssh-keys \
+  --storage-sku "$DISK_SKU" \
   --custom-data "$CLOUD_INIT_YAML" \
   -o none
 
@@ -166,18 +298,34 @@ PUBLIC_IP=$(az network public-ip show \
   --name "$PUBLIC_IP_NAME" \
   --query ipAddress -o tsv)
 
+# ============================================= Résumé =============================================
 echo ""
 echo "=========================================="
-echo " Déploiement terminé"
-echo " RG        : $RG_NAME"
-echo " VM        : $VM_NAME ($VM_SIZE)"
-echo " Région    : $LOCATION"
-echo " Public IP : $PUBLIC_IP"
-echo " n8n URL   : http://$PUBLIC_IP:5678"
-echo " SSH 22    : ssh $ADMIN_USER@$PUBLIC_IP"
-echo " SSH 443   : ssh -p 443 $ADMIN_USER@$PUBLIC_IP"
-echo " Auth n8n  : admin / admin123"
+echo "✅ Déploiement terminé avec succès !"
+echo "=========================================="
 echo ""
-echo " Attends 3-5 min que cloud-init installe Docker et n8n"
-echo " n8n sera accessible directement sans erreur de cookie"
+echo "📦 Ressources créées :"
+echo "  Resource Group : $RG_NAME"
+echo "  VM             : $VM_NAME ($VM_SIZE)"
+echo "  Région         : $LOCATION"
+echo "  IP Publique    : $PUBLIC_IP"
+echo ""
+echo "🔗 Accès :"
+echo "  n8n Interface  : http://$PUBLIC_IP:5678"
+echo "  SSH (port 22)  : ssh $ADMIN_USER@$PUBLIC_IP"
+echo "  SSH (port 443) : ssh -p 443 $ADMIN_USER@$PUBLIC_IP"
+echo ""
+echo "🔐 Credentials n8n :"
+echo "  Username       : admin"
+echo "  Password       : admin123"
+echo ""
+echo "⏱ Installation en cours :"
+echo "  Attends 3-5 minutes que cloud-init installe Docker et n8n"
+echo "  Suivi des logs : ssh $ADMIN_USER@$PUBLIC_IP 'sudo tail -f /var/log/cloud-init-output.log'"
+echo ""
+echo "🔒 Sécurité :"
+echo "  ⚠ NSG ouvert à tous (*) - À restreindre en production !"
+echo "  ⚠ Credentials en clair - À changer immédiatement !"
+echo "  ⚠ Pas de HTTPS - À configurer avec reverse proxy + Let's Encrypt"
+echo ""
 echo "=========================================="
