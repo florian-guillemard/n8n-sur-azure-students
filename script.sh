@@ -60,10 +60,8 @@ esac
 echo "==> Mise à jour Azure CLI..."
 az upgrade --yes 2>/dev/null || true
 
-echo "==> Connexion à Azure..."
-if ! az account show &>/dev/null; then
-  az login
-fi
+az login
+
 
 # Récupération de l'ID de subscription
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
@@ -144,33 +142,28 @@ VM_NAME="${BASENAME}-vm01"
 # ============================================= Resource Group =============================================
 echo "==> Vérification du groupe de ressources : $RG_NAME"
 
-# Vérification compatible avec set -e (portable)
-if az group show --name "$RG_NAME" &>/dev/null; then
+if az group show --name "$RG_NAME" --output none 2>/dev/null; then
   EXISTING_LOC=$(az group show --name "$RG_NAME" --query location -o tsv)
-  echo "⚠ RG existant trouvé en région : $EXISTING_LOC"
+  echo "✓ RG existant trouvé en région : $EXISTING_LOC"
   
   if [ "$EXISTING_LOC" != "$LOCATION" ]; then
     echo "❌ Conflit de région détecté ! Suppression du RG..."
     az group delete --name "$RG_NAME" --yes --no-wait
-    echo "⏱ Attente 45s pour suppression complète..."
-    sleep 45
+    echo "⏱ Attente 60s pour suppression complète..."
+    sleep 60
+    
+    echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
+    az group create --name "$RG_NAME" --location "$LOCATION" --output none
   else
-    echo "✓ RG déjà en bonne région ($EXISTING_LOC)"
+    echo "✓ RG en bonne région, on continue"
   fi
+else
+  echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
+  az group create --name "$RG_NAME" --location "$LOCATION" --output none
 fi
 
-echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
-az group create \
-  --name "$RG_NAME" \
-  --location "$LOCATION" \
-  --output none
-
 echo "✓ Resource Group prêt"
-echo "⏱ Pause 10s pour propagation Azure..."
-sleep 10
-
-# ============================================= Cloud-init =============================================
-read -r -d '' CLOUD_INIT_YAML << 'EOF' || true
+CLOUD_INIT_YAML=$(cat << 'CLOUDEOF'
 #cloud-config
 package_update: true
 package_upgrade: true
@@ -179,41 +172,51 @@ packages:
   - ca-certificates
   - curl
   - gnupg
-  - ufw
 
-groups:
-  - docker
-
-system_info:
-  default_user:
-    groups: [docker]
+write_files:
+  - path: /tmp/setup-docker.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euxo pipefail
+      exec > /tmp/docker-install.log 2>&1
+      
+      echo "Starting Docker installation..."
+      
+      mkdir -p /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      
+      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bullseye stable" > /etc/apt/sources.list.d/docker.list
+      
+      apt-get update
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      
+      systemctl enable docker
+      systemctl start docker
+      
+      usermod -aG docker devopsadmin
+      
+      sleep 5
+      
+      docker run -d --name n8n -p 5678:5678 \
+        -e N8N_BASIC_AUTH_ACTIVE=true \
+        -e N8N_BASIC_AUTH_USER=admin \
+        -e N8N_BASIC_AUTH_PASSWORD=admin123 \
+        -e N8N_SECURE_COOKIE=false \
+        -v n8n_/home/node/.n8n \
+        --restart unless-stopped \
+        n8nio/n8n
+      
+      echo "Installation completed successfully"
 
 runcmd:
-  # Installation Docker
-  - mkdir -p /etc/apt/keyrings
-  - curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  - chmod a+r /etc/apt/keyrings/docker.gpg
-  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-  - apt-get update
-  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  - systemctl enable docker
-  - systemctl start docker
-  
-  # Déploiement n8n avec volume corrigé
-  - docker run -d --name n8n -p 5678:5678 -e N8N_BASIC_AUTH_ACTIVE=true -e N8N_BASIC_AUTH_USER=admin -e N8N_BASIC_AUTH_PASSWORD=admin123 -e N8N_SECURE_COOKIE=false -v n8n_/home/node/.n8n --restart unless-stopped n8nio/n8n
-  
-  # Configuration SSH sur port 443 (en plus du 22)
+  - /tmp/setup-docker.sh
   - sed -i 's/#Port 22/Port 22\nPort 443/' /etc/ssh/sshd_config
   - systemctl restart sshd
-  
-  # Firewall local (double sécurité avec NSG)
-  - ufw default deny incoming
-  - ufw default allow outgoing
-  - ufw allow 22/tcp
-  - ufw allow 443/tcp
-  - ufw allow 5678/tcp
-  - ufw --force enable
-EOF
+CLOUDEOF
+)
+
 
 # ============================================= Réseau Azure =============================================
 echo ""
