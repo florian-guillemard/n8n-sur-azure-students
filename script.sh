@@ -92,21 +92,12 @@ fi
 echo "Régions autorisées par Azure :"
 printf '  ✓ %s\n' "${POLICY_REGIONS[@]}"
 
-# Ordre de préférence
-PREFERRED_REGIONS=("switzerlandnorth" "francecentral" "italynorth" "germanywestcentral" "spaincentral")
-LOCATION=""
-
-# Sélection de la première région préférée disponible
-for pref in "${PREFERRED_REGIONS[@]}"; do
-  for allowed in "${POLICY_REGIONS[@]}"; do
-    if [ "$pref" = "$allowed" ]; then
-      LOCATION="$pref"
-      break 2
-    fi
-  done
-done
-
-if [ -z "$LOCATION" ]; then
+# Sélection de la première région disponible (100% dynamique)
+if [ ${#POLICY_REGIONS[@]} -gt 0 ]; then
+  LOCATION="${POLICY_REGIONS[0]}"
+  echo ""
+  echo "Région sélectionnée automatiquement : $LOCATION"
+else
   echo "ERREUR : Aucune région valide trouvée."
   exit 1
 fi
@@ -292,7 +283,7 @@ az vm create \
   --admin-username "$ADMIN_USER" \
   --generate-ssh-keys \
   --storage-sku "$DISK_SKU" \
-  --custom-data "$CLOUD_INIT_YAML" \
+  --custom-data <(echo "$CLOUD_INIT_YAML") \
   -o none
 
 PUBLIC_IP=$(az network public-ip show \
