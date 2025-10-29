@@ -11,6 +11,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: test
 
     steps:
       - name: Checkout
