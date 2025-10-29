@@ -35,34 +35,6 @@ jobs:
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
           echo "✅ Connecté: $(az account show --query name -o tsv)"
 
-      - name: Pre-clean previous resources (best effort)
-        run: |
-          RG_CANDIDATES=("projet-docker-rg" "projet-docker-rg-swe")
-          echo "🔎 Pré-nettoyage: vérification des RG possibles: ${RG_CANDIDATES[*]}"
-          for RGX in "${RG_CANDIDATES[@]}"; do
-            if az group show -n "$RGX" >/dev/null 2>&1; then
-              echo "🧹 RG existant détecté ($RGX) — suppression avant test"
-              az group delete -n "$RGX" --yes --no-wait || true
-            fi
-          done
-          # Attendre jusqu'à ~6 min que tous aient disparu
-          echo "⏳ Attente suppression complète (max ~6 min)"
-          for i in {1..18}; do
-            sleep 20
-            LEFT=()
-            for RGX in "${RG_CANDIDATES[@]}"; do
-              az group show -n "$RGX" >/dev/null 2>&1 && LEFT+=("$RGX")
-            done
-            if [ ${#LEFT[@]} -eq 0 ]; then
-              echo "✅ Aucun RG candidat restant"
-              break
-            else
-              echo "[${i}] RG restants: ${LEFT[*]}"
-            fi
-            if [ $i -eq 18 ]; then
-              echo "❌ Des RG existent encore après attente: ${LEFT[*]}" && exit 1
-            fi
-          done
 
       - name: Run script.sh
         run: |
