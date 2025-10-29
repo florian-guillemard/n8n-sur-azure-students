@@ -88,16 +88,23 @@ jobs:
 
       - name: Run script.sh
         run: |
-          # Create a shim to bypass interactive `az login` calls from the script
+          # Create a shim to bypass interactive `az login` and `az upgrade` calls
           REAL_AZ=$(command -v az)
           mkdir -p .ci-bin
           cat > .ci-bin/az <<'AZWRAP'
           #!/usr/bin/env bash
           REAL_AZ="__REAL_AZ__"
+          # Skip az login (already authenticated via service principal)
           if [ "$1" = "login" ]; then
-            echo "CI: skip az login (already authenticated)"
+            echo "✓ CI: skip az login (already authenticated)"
             exit 0
           fi
+          # Skip az upgrade (not needed in CI and can cause issues)
+          if [ "$1" = "upgrade" ]; then
+            echo "✓ CI: skip az upgrade (not needed)"
+            exit 0
+          fi
+          # Pass all other commands to the real az
           exec "$REAL_AZ" "$@"
           AZWRAP
           sed -i "s|__REAL_AZ__|$REAL_AZ|" .ci-bin/az
