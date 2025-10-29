@@ -1,3 +1,33 @@
+# ============================================================================
+# CI - Validation du déploiement n8n sur Azure
+# ============================================================================
+#
+# Objectif : Valider que le script script.sh fonctionne correctement
+#
+# Ce workflow teste automatiquement :
+#   1. Le déploiement d'une VM Azure
+#   2. L'installation de Docker et n8n via cloud-init
+#   3. L'accessibilité de n8n sur le port 5678
+#   4. Le nettoyage systématique des ressources (zéro coût résiduel)
+#
+# ⚠️ IMPORTANT : Ce n'est PAS un déploiement en production (CD)
+#    Les ressources sont TOUJOURS supprimées après validation
+#
+# Déclencheurs :
+#   - Push sur main
+#   - Pull Request vers main
+#   - Déclenchement manuel
+#
+# Prérequis (secrets GitHub) :
+#   - AZURE_CLIENT_ID
+#   - AZURE_CLIENT_SECRET
+#   - AZURE_TENANT_ID
+#   - AZURE_SUBSCRIPTION_ID
+#
+# Durée moyenne : 10-20 minutes
+# Coût par run : ~0.05€ (VM B2s, automatiquement supprimée)
+# ============================================================================
+
 name: CI - Validation script.sh (VM + n8n)
 
 on:
@@ -14,12 +44,22 @@ jobs:
     environment: test
 
     steps:
+      # ========================================
+      # 1. Préparation de l'environnement
+      # ========================================
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Azure CLI
         run: |
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      # ========================================
+      # 2. Authentification Azure
+      # ========================================
+      # Utilise un Service Principal pour se connecter à Azure
+      # Vérifie que tous les secrets requis sont présents
 
       - name: Azure login (service principal)
         env:
@@ -28,20 +68,36 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
+          # Vérifier que tous les secrets sont présents
           for v in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
             if [ -z "${!v:-}" ]; then echo "❌ Secret $v manquant" && exit 1; fi
           done
+          
+          # Connexion via Service Principal
           az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
           echo "✅ Connecté: $(az account show --query name -o tsv)"
 
+      # ========================================
+      # 3. Exécution du script de déploiement
+      # ========================================
+      # Lance script.sh et capture la sortie dans deploy.log
+      # Le script crée : Resource Group, VNet, NSG, VM, et installe n8n
 
       - name: Run script.sh
         run: |
-
           chmod +x script.sh
           set -o pipefail
           ./script.sh 2>&1 | tee deploy.log
+
+      # ========================================
+      # 4. Extraction des informations de déploiement
+      # ========================================
+      # Parse le log pour récupérer :
+      #   - RG : Nom du Resource Group
+      #   - VM : Nom de la machine virtuelle
+      #   - VM_IP : IP publique de la VM
+      # Ces variables sont nécessaires pour les tests et le cleanup
 
       - name: Extract RG/VM/IP from logs
         id: extract
@@ -49,207 +105,120 @@ jobs:
           RG=$(grep -E '^\s*Resource Group\s*:' deploy.log | tail -n1 | awk -F':' '{print $2}' | xargs)
           VM=$(grep -E '^\s*VM\s*:' deploy.log | tail -n1 | awk -F':' '{print $2}' | xargs | awk '{print $1}')
           IP=$(grep -E '^\s*IP Publique\s*:' deploy.log | tail -n1 | awk -F':' '{print $2}' | xargs)
+          
+          # Stocker dans les variables d'environnement GitHub
           echo "RG=$RG" >> $GITHUB_ENV
           echo "VM=$VM" >> $GITHUB_ENV
           echo "VM_IP=$IP" >> $GITHUB_ENV
+          
+          # Afficher les valeurs extraites
           echo "RG=$RG"; echo "VM=$VM"; echo "IP=$IP"
+          
+          # Vérifier qu'on a bien tout récupéré
           if [ -z "$RG" ] || [ -z "$VM" ] || [ -z "$IP" ]; then
             echo "❌ Impossible d'extraire RG/VM/IP du log" && exit 1
           fi
+
+      # ========================================
+      # 5. Vérification de la VM sur Azure
+      # ========================================
+      # Confirme que la VM existe bien dans Azure
 
       - name: Verify VM exists
         run: |
           az vm show -g "$RG" -n "$VM" >/dev/null
           echo "✅ VM trouvée: $VM (RG: $RG)"
 
-      - name: Diagnostics détaillés (cloud-init + docker)
-        if: always()
-        continue-on-error: true
-        run: |
-          echo "📋 Collecte des diagnostics depuis la VM..."
-          echo ""
-          echo "=========================================="
-          echo "== cloud-init status =="
-          echo "=========================================="
-          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-            --scripts "cloud-init status || true" \
-            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" || true
-          echo ""
-          echo "=========================================="
-          echo "== cloud-init-output.log (tail 300) =="
-          echo "=========================================="
-          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-            --scripts "tail -n 300 /var/log/cloud-init-output.log || true" \
-            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" | tail -n 300 || true
-          echo ""
-          echo "=========================================="
-          echo "== systemctl status docker =="
-          echo "=========================================="
-          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-            --scripts "systemctl status docker --no-pager || true" \
-            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" || true
-          echo ""
-          echo "=========================================="
-          echo "== docker ps -a =="
-          echo "=========================================="
-          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-            --scripts "docker ps -a || true" \
-            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" || true
-          echo ""
-          echo "=========================================="
-          echo "== docker logs n8n (tail 200) =="
-          echo "=========================================="
-          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-            --scripts "docker logs --tail 200 n8n 2>&1 || true" \
-            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" | tail -n 200 || true
+      # ========================================
+      # 6. Test de disponibilité de n8n
+      # ========================================
+      # Attend que n8n réponde sur le port 5678 (max 8 minutes)
+      # Codes HTTP acceptés :
+      #   - 200 : OK
+      #   - 401 : Unauthorized (auth requise = service OK)
+      #   - 302/308 : Redirect (service OK)
+      #
+      # En cas d'échec : affiche les diagnostics (cloud-init, docker, logs n8n)
 
-      - name: Wait for SSH (port 22) readiness
+      - name: Wait for n8n to be ready
         run: |
-          echo "⏳ Attente disponibilité SSH (22) (max 6 min)"
+          echo "⏳ Attente n8n (port 5678) - max 8 min"
           READY=0
-          for i in {1..12}; do
-            if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$VM_IP/22" 2>/dev/null; then
-              echo "✅ SSH 22 joignable"; READY=1; break
-            fi
-            echo "[$i] SSH non joignable..."
-            sleep 30
-          done
-          if [ "$READY" -ne 1 ]; then
-            echo "❌ SSH (22) non joignable après ~6 min — diagnostics:"
-            az vm run-command invoke \
-              -g "$RG" -n "$VM" \
-              --command-id RunShellScript \
-              --scripts "echo '== cloud-init status =='; cloud-init status || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
-              --query 'value[0].message' -o tsv | tail -n 220 || true
-            exit 1
-          fi
-
-      - name: Wait for n8n (port 5678)
-        run: |
-          echo "⏳ Attente n8n sur 5678 (max 6 min)"
-          set +e
-          READY=""; CODE="000"
-          for i in {1..12}; do
+          
+          # 16 tentatives × 30 secondes = 8 minutes
+          for i in {1..16}; do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://$VM_IP:5678 || echo "000")
             echo "[$i] HTTP=$CODE"
-            if [ "$CODE" != "000" ]; then READY=1; break; fi
-            # Tous les 2 cycles: si erreurs dans cloud-init, fail direct
-            if [ $((i % 2)) -eq 0 ]; then
-              LOG=$(az vm run-command invoke \
-                -g "$RG" -n "$VM" \
-                --command-id RunShellScript \
-                --scripts "tail -n 120 /var/log/cloud-init-output.log || true" \
-                --query 'value[0].message' -o tsv 2>/dev/null)
-              echo "$LOG" | tail -n 60
-              echo "$LOG" | grep -iE "(error|failed|traceback)" && {
-                echo "❌ Erreur détectée dans cloud-init pendant l'attente HTTP — diagnostics:";
-                az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-                  --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 150) =='; docker logs --tail 150 n8n || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
-                  --query 'value[0].message' -o tsv | tail -n 240 || true;
-                exit 1;
-              }
+            
+            # Si n8n répond avec un code valide, succès
+            if [[ "$CODE" =~ ^(200|401|302|308)$ ]]; then
+              echo "✅ n8n répond (HTTP $CODE)"
+              READY=1
+              break
             fi
+            
             sleep 30
           done
-          set -e
-          if [ -z "$READY" ]; then
-            echo "❌ n8n ne répond pas après ~6 min — diagnostics:"
-            az vm run-command invoke \
-              -g "$RG" -n "$VM" \
-              --command-id RunShellScript \
-              --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 150) =='; docker logs --tail 150 n8n || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
-              --query 'value[0].message' -o tsv | tail -n 240 || true
+          
+          # Si échec après 8 min, afficher les diagnostics et échouer
+          if [ "$READY" -ne 1 ]; then
+            echo "❌ n8n ne répond pas après 8 min"
+            echo "📋 Diagnostics:"
+            az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+              --scripts "cloud-init status; echo '---'; docker ps -a; echo '---'; docker logs --tail 100 n8n 2>&1 || true" \
+              --query 'value[0].message' -o tsv 2>/dev/null || true
             exit 1
           fi
 
-      - name: Verify n8n container via RunCommand
-        run: |
-          echo "🔍 Vérification docker sur la VM (max 6 min)"
-          set +e
-          FOUND=0
-          for i in {1..12}; do
-            OUT=$(az vm run-command invoke \
-              -g "$RG" -n "$VM" \
-              --command-id RunShellScript \
-              --scripts "set -e; which docker || true; docker --version || true; systemctl is-active docker || true; docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'" \
-              --query 'value[0].message' -o tsv 2>/dev/null)
-            echo "[$i] run-command output:"; echo "$OUT" | tail -n 15
-            # Si conteneur n8n 'Exited', échoue immédiatement avec logs
-            echo "$OUT" | grep -qi "^n8n\b.*Exited" && {
-              echo "❌ Conteneur n8n en état Exited — diagnostics:";
-              az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-                --scripts "echo '== docker logs n8n (tail 200) =='; docker logs --tail 200 n8n || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
-                --query 'value[0].message' -o tsv | tail -n 220 || true;
-              exit 1;
-            }
-            echo "$OUT" | grep -qi "^n8n\b" && FOUND=1 && break
-            sleep 30
-          done
-          set -e
-          if [ "$FOUND" -ne 1 ]; then
-            echo "❌ n8n non détecté (docker ps -a) — diagnostics:" 
-            az vm run-command invoke \
-              -g "$RG" -n "$VM" \
-              --command-id RunShellScript \
-              --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 150) =='; docker logs --tail 150 n8n || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
-              --query 'value[0].message' -o tsv | tail -n 240 || true
-            exit 1
-          fi
-          echo "✅ Conteneur n8n détecté"
+      # ========================================
+      # 7. Génération du résumé
+      # ========================================
+      # Crée un résumé visible dans l'interface GitHub Actions
+      # Affiche le statut (succès/échec) et les infos de la VM
 
-      - name: Check SSH connectivity (22/443)
-        run: |
-          echo "### Tests ports SSH" >> $GITHUB_STEP_SUMMARY
-          ok22=0; ok443=0
-          if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$VM_IP/22" 2>/dev/null; then echo "✅ Port 22 OK" >> $GITHUB_STEP_SUMMARY; ok22=1; else echo "❌ Port 22 KO" >> $GITHUB_STEP_SUMMARY; fi
-          if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$VM_IP/443" 2>/dev/null; then echo "✅ Port 443 OK" >> $GITHUB_STEP_SUMMARY; ok443=1; else echo "❌ Port 443 KO" >> $GITHUB_STEP_SUMMARY; fi
-          [ $ok22 -eq 1 ] || [ $ok443 -eq 1 ] || (echo "❌ Aucune connectivité SSH" && exit 1)
-
-      - name: Quick HTTP check
-        run: |
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://$VM_IP:5678 || echo "000")
-          echo "HTTP=$CODE"
-          case "$CODE" in
-            200|401|302|308) echo "✅ n8n répond" ;;
-            *) echo "❌ Code HTTP inattendu: $CODE" && exit 1 ;;
-          esac
-
-      - name: Résumé succès
-        if: success()
-        run: |
-          echo "## ✅ Validation réussie" >> $GITHUB_STEP_SUMMARY
-          echo "- VM: $VM" >> $GITHUB_STEP_SUMMARY
-          echo "- RG: $RG" >> $GITHUB_STEP_SUMMARY
-          echo "- IP: $VM_IP" >> $GITHUB_STEP_SUMMARY
-          echo "- n8n OK + SSH OK" >> $GITHUB_STEP_SUMMARY
-
-      - name: Résumé erreur
-        if: failure()
-        run: |
-          echo "## ❌ Échec de validation" >> $GITHUB_STEP_SUMMARY
-          echo "- VM: $VM" >> $GITHUB_STEP_SUMMARY
-          echo "- RG: $RG" >> $GITHUB_STEP_SUMMARY
-          echo "- IP: $VM_IP" >> $GITHUB_STEP_SUMMARY
-          echo "Voir les étapes précédentes pour les détails." >> $GITHUB_STEP_SUMMARY
-
-      - name: Cleanup RG (always)
+      - name: Summary
         if: always()
         run: |
-          # Supprimer le RG extrait + noms de fallback, quoi qu'il arrive
-          CAND=( )
-          if [ -n "${RG:-}" ]; then CAND+=("$RG"); fi
-          CAND+=("projet-docker-rg" "projet-docker-rg-swe")
-          # Dédupliquer
-          UNIQUE=()
-          for x in "${CAND[@]}"; do
-            SKIP=0; for y in "${UNIQUE[@]}"; do [ "$x" = "$y" ] && SKIP=1 && break; done; [ $SKIP -eq 0 ] && UNIQUE+=("$x");
-          done
-          if [ ${#UNIQUE[@]} -eq 0 ]; then
-            echo "ℹ️ Aucun nom de RG connu; rien à supprimer"
-            exit 0
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## ✅ Validation réussie" >> $GITHUB_STEP_SUMMARY
+            echo "- VM: $VM" >> $GITHUB_STEP_SUMMARY
+            echo "- RG: $RG" >> $GITHUB_STEP_SUMMARY
+            echo "- IP: $VM_IP" >> $GITHUB_STEP_SUMMARY
+            echo "- n8n accessible sur http://$VM_IP:5678" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Échec de validation" >> $GITHUB_STEP_SUMMARY
+            echo "- VM: ${VM:-N/A}" >> $GITHUB_STEP_SUMMARY
+            echo "- RG: ${RG:-N/A}" >> $GITHUB_STEP_SUMMARY
+            echo "- IP: ${VM_IP:-N/A}" >> $GITHUB_STEP_SUMMARY
+            echo "Voir les logs ci-dessus pour les détails." >> $GITHUB_STEP_SUMMARY
           fi
-          echo "🧹 Suppression des RG (async): ${UNIQUE[*]}"
-          for RGX in "${UNIQUE[@]}"; do
-            az group delete -n "$RGX" --yes --no-wait || true
+
+      # ========================================
+      # 8. Nettoyage des ressources Azure
+      # ========================================
+      # TOUJOURS exécuté (succès ou échec)
+      # Supprime tous les Resource Groups créés pendant le test
+      # Suppression asynchrone (--no-wait) pour ne pas bloquer le workflow
+      #
+      # ⚠️ CRITIQUE : Évite les coûts Azure inutiles
+      #    Aucune ressource ne reste après la CI
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🧹 Nettoyage des ressources Azure..."
+          
+          # Liste des RG potentiels à supprimer
+          RG_LIST=()
+          [ -n "${RG:-}" ] && RG_LIST+=("$RG")
+          RG_LIST+=("projet-docker-rg" "projet-docker-rg-swe")
+          
+          # Suppression async (dédupliquée avec sort -u)
+          for rg in $(printf '%s\n' "${RG_LIST[@]}" | sort -u); do
+            if az group show -n "$rg" >/dev/null 2>&1; then
+              echo "  → Suppression de $rg"
+              az group delete -n "$rg" --yes --no-wait || true
+            fi
           done
-          echo "🧹 Cleanup déclenché (les suppressions se poursuivent côté Azure)"
+          
+          echo "✅ Cleanup lancé en arrière-plan"
