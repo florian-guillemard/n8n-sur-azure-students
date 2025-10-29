@@ -1,4 +1,4 @@
-name: CI - Validation
+name: CI - Validation script.sh (VM + n8n)
 
 on:
   push:
@@ -10,33 +10,138 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    name: Validation du script
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Vérification syntaxe bash
+      - name: Install Azure CLI
         run: |
-          echo "🔍 Vérification de script.sh..."
-          bash -n script.sh
-          echo "✅ Script valide"
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
-      - name: Vérification shellcheck
+      - name: Azure login (service principal)
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
-          echo "🔍 Analyse statique du script..."
-          shellcheck script.sh || echo "⚠️ Warnings détectés mais non bloquants"
+          for v in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            if [ -z "${!v:-}" ]; then echo "❌ Secret $v manquant" && exit 1; fi
+          done
+          az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          echo "✅ Connecté: $(az account show --query name -o tsv)"
 
-      - name: Résumé
+      - name: Run script.sh
+        run: |
+          chmod +x script.sh
+          set -o pipefail
+          ./script.sh 2>&1 | tee deploy.log
+
+      - name: Extract RG/VM/IP from logs
+        id: extract
+        run: |
+          RG=$(grep -E '^\s*Resource Group\s*:' deploy.log | tail -n1 | awk -F':' '{print $2}' | xargs)
+          VM=$(grep -E '^\s*VM\s*:' deploy.log | tail -n1 | awk -F':' '{print $2}' | xargs | awk '{print $1}')
+          IP=$(grep -E '^\s*IP Publique\s*:' deploy.log | tail -n1 | awk -F':' '{print $2}' | xargs)
+          echo "RG=$RG" >> $GITHUB_ENV
+          echo "VM=$VM" >> $GITHUB_ENV
+          echo "VM_IP=$IP" >> $GITHUB_ENV
+          echo "RG=$RG"; echo "VM=$VM"; echo "IP=$IP"
+          if [ -z "$RG" ] || [ -z "$VM" ] || [ -z "$IP" ]; then
+            echo "❌ Impossible d'extraire RG/VM/IP du log" && exit 1
+          fi
+
+      - name: Verify VM exists
+        run: |
+          az vm show -g "$RG" -n "$VM" >/dev/null
+          echo "✅ VM trouvée: $VM (RG: $RG)"
+
+      - name: Wait for n8n (port 5678)
+        run: |
+          echo "⏳ Attente n8n sur 5678 (max 12 min)"
+          set +e
+          READY=""; CODE="000"
+          for i in {1..24}; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://$VM_IP:5678 || echo "000")
+            echo "[$i] HTTP=$CODE"
+            if [ "$CODE" != "000" ]; then READY=1; break; fi
+            sleep 30
+          done
+          set -e
+          if [ -z "$READY" ]; then echo "⚠️ HTTP pas prêt, on vérifie docker"; fi
+
+      - name: Verify n8n container via RunCommand
+        run: |
+          echo "🔍 Vérification docker sur la VM"
+          set +e
+          FOUND=0
+          for i in {1..24}; do
+            OUT=$(az vm run-command invoke \
+              -g "$RG" -n "$VM" \
+              --command-id RunShellScript \
+              --scripts "docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -i '^n8n ' || true" \
+              --query 'value[0].message' -o tsv 2>/dev/null)
+            echo "[$i] run-command output:"; echo "$OUT" | tail -n 5
+            echo "$OUT" | grep -qi "^n8n" && FOUND=1 && break
+            sleep 30
+          done
+          set -e
+          if [ "$FOUND" -ne 1 ]; then
+            echo "❌ n8n pas détecté via docker ps"
+            echo "==> Extrait cloud-init-output.log:" 
+            az vm run-command invoke \
+              -g "$RG" -n "$VM" \
+              --command-id RunShellScript \
+              --scripts "tail -n 100 /var/log/cloud-init-output.log || true" \
+              --query 'value[0].message' -o tsv | tail -n 100 || true
+            exit 1
+          fi
+          echo "✅ Conteneur n8n détecté"
+
+      - name: Check SSH connectivity (22/443)
+        run: |
+          echo "### Tests ports SSH" >> $GITHUB_STEP_SUMMARY
+          ok22=0; ok443=0
+          if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$VM_IP/22" 2>/dev/null; then echo "✅ Port 22 OK" >> $GITHUB_STEP_SUMMARY; ok22=1; else echo "❌ Port 22 KO" >> $GITHUB_STEP_SUMMARY; fi
+          if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$VM_IP/443" 2>/dev/null; then echo "✅ Port 443 OK" >> $GITHUB_STEP_SUMMARY; ok443=1; else echo "❌ Port 443 KO" >> $GITHUB_STEP_SUMMARY; fi
+          [ $ok22 -eq 1 ] || [ $ok443 -eq 1 ] || (echo "❌ Aucune connectivité SSH" && exit 1)
+
+      - name: Quick HTTP check
+        run: |
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://$VM_IP:5678 || echo "000")
+          echo "HTTP=$CODE"
+          case "$CODE" in
+            200|401|302|308) echo "✅ n8n répond" ;;
+            *) echo "❌ Code HTTP inattendu: $CODE" && exit 1 ;;
+          esac
+
+      - name: Résumé succès
+        if: success()
         run: |
           echo "## ✅ Validation réussie" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Le script est prêt à être utilisé localement." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Pour déployer :" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "chmod +x script.sh" >> $GITHUB_STEP_SUMMARY
-          echo "./script.sh" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "- VM: $VM" >> $GITHUB_STEP_SUMMARY
+          echo "- RG: $RG" >> $GITHUB_STEP_SUMMARY
+          echo "- IP: $VM_IP" >> $GITHUB_STEP_SUMMARY
+          echo "- n8n OK + SSH OK" >> $GITHUB_STEP_SUMMARY
+
+      - name: Résumé erreur
+        if: failure()
+        run: |
+          echo "## ❌ Échec de validation" >> $GITHUB_STEP_SUMMARY
+          echo "- VM: $VM" >> $GITHUB_STEP_SUMMARY
+          echo "- RG: $RG" >> $GITHUB_STEP_SUMMARY
+          echo "- IP: $VM_IP" >> $GITHUB_STEP_SUMMARY
+          echo "Voir les étapes précédentes pour les détails." >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup RG (always)
+        if: always()
+        run: |
+          if [ -n "${RG:-}" ]; then
+            az group delete -n "$RG" --yes --no-wait || true
+            echo "🧹 Suppression du resource group lancée (async)"
+          else
+            echo "ℹ️ RG non défini, rien à supprimer"
+          fi
