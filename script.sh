@@ -133,11 +133,14 @@ case "$os" in
     fi
     ;;
   Windows)
-    echo "Utilisez la commande suivante dans PowerShell :"
-    echo 'winget install -e --id Microsoft.AzureCLI'
-    exit 0
-    ;;
-esac
+    if ! command -v az &> /dev/null; then
+      echo "Azure CLI non trouvée."
+      echo "Merci d'installer manuellement Azure CLI sous Windows via PowerShell avec :"
+      echo "  winget install -e --id Microsoft.AzureCLI"
+      echo "Le script va maintenant s'arrêter. Relancez-le après installation."
+      exit 1
+  fi
+  ;;
 
 # ============================================= Connexion Azure =============================================
 echo "==> Mise à jour Azure CLI..."
