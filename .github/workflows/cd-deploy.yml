@@ -62,22 +62,21 @@ jobs:
 
       - name: Wait for cloud-init completion
         run: |
-          echo "⏳ Attente fin cloud-init (max ~10 min)"
-          set +e
+          echo "⏳ Attente fin cloud-init (max ~10 min, non-bloquant)"
           DONE=0
           for i in {1..20}; do
             OUT=$(az vm run-command invoke \
               -g "$RG" -n "$VM" \
               --command-id RunShellScript \
-              --scripts "cloud-init status --wait >/dev/null 2>&1; ec=$?; echo EXIT:$ec" \
-              --query 'value[0].message' -o tsv 2>/dev/null | tail -n1)
-            echo "[$i] $OUT"
-            echo "$OUT" | grep -q "EXIT:0" && DONE=1 && break
+              --scripts "cloud-init status 2>&1 || true" \
+              --query 'value[0].message' -o tsv 2>/dev/null | tr -d '\r')
+            echo "[$i]"
+            echo "$OUT" | tail -n 10
+            echo "$OUT" | grep -q "status: done" && DONE=1 && break
             sleep 30
           done
-          set -e
           if [ "$DONE" -ne 1 ]; then
-            echo "⚠️ cloud-init pas terminé; on continue quand même"
+            echo "⚠️ cloud-init pas terminé après ~10 min; on continue quand même"
           fi
 
       - name: Wait for n8n (port 5678)
