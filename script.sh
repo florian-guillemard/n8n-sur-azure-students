@@ -21,35 +21,50 @@ cleanup_resources() {
   echo "⚠️  SUPPRESSION DES RESSOURCES"
   echo "=========================================="
   echo ""
-  
+
   # Vérifier si le RG existe
   if ! az group show --name "$RG_NAME" --output none 2>/dev/null; then
     echo "❌ Le Resource Group '$RG_NAME' n'existe pas ou a déjà été supprimé"
     exit 0
   fi
-  
+
   echo "Cette action va supprimer :"
   echo "  • Resource Group : $RG_NAME"
   echo "  • VM et tous ses disques"
   echo "  • Réseau (VNet, Subnet, NSG, NIC)"
   echo "  • IP publique"
   echo "  • Toutes les ressources associées"
+  echo "  • Clé SSH locale générée : ~/.ssh/n8n_azure et ~/.ssh/n8n_azure.pub"
   echo ""
-  
+
   # Afficher les ressources existantes
   echo "Ressources actuelles :"
   az resource list --resource-group "$RG_NAME" --query "[].{Nom:name, Type:type}" -o table
-  
+
   echo ""
   echo "⏱ Temps estimé : 10-20 minutes"
   echo ""
   read -p "Êtes-vous sûr de vouloir tout supprimer ? (oui/non) : " confirm
-  
+
   if [ "$confirm" = "oui" ] || [ "$confirm" = "OUI" ]; then
     echo ""
     echo "==> Suppression du Resource Group en cours..."
     az group delete --name "$RG_NAME" --yes --no-wait
     echo "✓ Suppression lancée en arrière-plan"
+    echo ""
+
+    # Suppression de la clé SSH locale générée automatiquement
+    SSH_PRIV_KEY="$HOME/.ssh/n8n_azure"
+    SSH_PUB_KEY="$HOME/.ssh/n8n_azure.pub"
+
+    if [ -f "$SSH_PRIV_KEY" ] && [ -f "$SSH_PUB_KEY" ]; then
+      echo "==> Suppression des clés SSH locales : $SSH_PRIV_KEY et $SSH_PUB_KEY"
+      rm -f "$SSH_PRIV_KEY" "$SSH_PUB_KEY"
+      echo "✓ Clés SSH supprimées"
+    else
+      echo "ℹ️ Pas de clés SSH locales à supprimer."
+    fi
+
     echo ""
     echo "Pour suivre la progression :"
     echo "  az group show --name $RG_NAME --query \"properties.provisioningState\" -o tsv"
@@ -59,7 +74,7 @@ cleanup_resources() {
     echo "❌ Suppression annulée"
     echo ""
   fi
-  
+
   exit 0
 }
 
@@ -136,12 +151,10 @@ SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 # ============================================= Sélection Région =============================================
 echo ""
 echo "==> Vérification des régions autorisées..."
-# Récupération des régions depuis la policy (portable toutes versions)
 ALLOWED_REGIONS=$(az policy assignment list \
   --query "[?displayName=='Allowed resource deployment regions'].parameters.listOfAllowedLocations.value[]" \
   -o tsv 2>/dev/null || echo "")
 
-# Conversion en array PORTABLE
 POLICY_REGIONS=()
 if [ -n "$ALLOWED_REGIONS" ]; then
   while IFS=$'\n' read -r line; do
@@ -149,7 +162,6 @@ if [ -n "$ALLOWED_REGIONS" ]; then
   done <<< "$ALLOWED_REGIONS"
 fi
 
-# Arrêt si aucune région récupérée dynamiquement
 if [ ${#POLICY_REGIONS[@]} -eq 0 ]; then
   echo "ERREUR : Impossible de récupérer les régions autorisées depuis Azure Policy"
   echo "  Vérifiez vos permissions et la présence d'une policy de localisation"
@@ -159,7 +171,6 @@ fi
 echo "Régions autorisées par Azure :"
 printf '  ✓ %s\n' "${POLICY_REGIONS[@]}"
 
-# Sélection de la première région disponible (100% dynamique)
 if [ ${#POLICY_REGIONS[@]} -gt 0 ]; then
   LOCATION="${POLICY_REGIONS[0]}"
   echo ""
@@ -183,19 +194,34 @@ echo ""
 echo "⏱ Pause 5 secondes avant déploiement..."
 sleep 5
 
+# ============================================= Fonction pour générer clé SSH =============================================
+generate_ssh_key() {
+  SSH_KEY_PATH="$HOME/.ssh/n8n_azure"
+  if [[ -f "${SSH_KEY_PATH}" || -f "${SSH_KEY_PATH}.pub" ]]; then
+    echo "⏳ Clé SSH $SSH_KEY_PATH déjà existante. Suppression des anciennes clés."
+    rm -f "${SSH_KEY_PATH}" "${SSH_KEY_PATH}.pub"
+  fi
+  echo "🗝 Génération d'une nouvelle paire de clés SSH : $SSH_KEY_PATH"
+  ssh-keygen -t rsa -b 2048 -f "$SSH_KEY_PATH" -N "" -q
+  echo "✓ Clé SSH générée."
+}
+
+# Générer la clé SSH avant la création VM
+generate_ssh_key
+
 # ============================================= Resource Group =============================================
 echo "==> Vérification du groupe de ressources : $RG_NAME"
 
 if az group show --name "$RG_NAME" --output none 2>/dev/null; then
   EXISTING_LOC=$(az group show --name "$RG_NAME" --query location -o tsv)
   echo "✓ RG existant trouvé en région : $EXISTING_LOC"
-  
+
   if [ "$EXISTING_LOC" != "$LOCATION" ]; then
     echo "❌ Conflit de région détecté ! Suppression du RG..."
     az group delete --name "$RG_NAME" --yes --no-wait
     echo "⏱ Attente 60s pour suppression complète..."
     sleep 60
-    
+
     echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
     az group create --name "$RG_NAME" --location "$LOCATION" --output none
   else
@@ -224,25 +250,25 @@ write_files:
       #!/bin/bash
       set -euxo pipefail
       exec > /tmp/docker-install.log 2>&1
-      
+
       echo "Starting Docker installation..."
-      
+
       mkdir -p /etc/apt/keyrings
       curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
       chmod a+r /etc/apt/keyrings/docker.gpg
-      
+
       echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bullseye stable" > /etc/apt/sources.list.d/docker.list
-      
+
       apt-get update
       apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-      
+
       systemctl enable docker
       systemctl start docker
-      
+
       usermod -aG docker devopsadmin
-      
+
       sleep 5
-      
+
       docker run -d --name n8n -p 5678:5678 \
         -e N8N_BASIC_AUTH_ACTIVE=true \
         -e N8N_BASIC_AUTH_USER=admin \
@@ -334,7 +360,7 @@ az vm create \
   --image Debian11 \
   --size "$VM_SIZE" \
   --admin-username "$ADMIN_USER" \
-  --generate-ssh-keys \
+  --ssh-key-values "$HOME/.ssh/n8n_azure.pub" \
   --storage-sku "$DISK_SKU" \
   --custom-data <(echo "$CLOUD_INIT_YAML") \
   -o none
@@ -356,19 +382,36 @@ echo "  VM             : $VM_NAME ($VM_SIZE)"
 echo "  Région         : $LOCATION"
 echo "  IP Publique    : $PUBLIC_IP"
 echo ""
+
+# Attendre que le service n8n soit accessible
+echo "⏳ Attente de la disponibilité de n8n..."
+MAX_RETRIES=180
+RETRY_COUNT=0
+while true; do
+  if curl -s --fail --connect-timeout 5 "http://$PUBLIC_IP:5678" >/dev/null; then
+    echo "✓ Le service est prêt pour utilisation."
+    break
+  fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  if [ "$RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
+    echo "⚠️ Timeout : n8n n'a pas répondu."
+    break
+  fi
+  echo "En attente..."
+  sleep 20
+done
 echo "🔗 Accès :"
 echo "  n8n Interface  : http://$PUBLIC_IP:5678"
-echo "  SSH (port 22)  : ssh $ADMIN_USER@$PUBLIC_IP"
-echo "  SSH (port 443) : ssh -p 443 $ADMIN_USER@$PUBLIC_IP"
+echo "  SSH (port 22)  : ssh -i ~/.ssh/n8n_azure $ADMIN_USER@$PUBLIC_IP"
+echo "  SSH (port 443) : ssh -i ~/.ssh/n8n_azure -p 443 $ADMIN_USER@$PUBLIC_IP"
 echo ""
 echo "🔐 Credentials n8n :"
 echo "  Username       : admin"
 echo "  Password       : admin123"
 echo ""
-echo "⏱ Installation en cours :"
-echo "  Attends 3-5 minutes que cloud-init installe Docker et n8n"
-echo "  Suivi des logs : ssh $ADMIN_USER@$PUBLIC_IP 'sudo tail -f /var/log/cloud-init-output.log'"
+echo "  Suivi des logs : ssh -i ~/.ssh/n8n_azure $ADMIN_USER@$PUBLIC_IP 'sudo tail -f /var/log/cloud-init-output.log'"
 echo ""
+
 echo "🔒 Sécurité :"
 echo "  ⚠ NSG ouvert à tous (*) - À restreindre en production !"
 echo "  ⚠ Credentials en clair - À changer immédiatement !"
