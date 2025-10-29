@@ -141,7 +141,7 @@ case "$os" in
       exit 1
   fi
   ;;
-
+esac
 # ============================================= Connexion Azure =============================================
 echo "==> Mise à jour Azure CLI..."
 az upgrade --yes 2>/dev/null || true
