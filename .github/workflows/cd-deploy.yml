@@ -24,6 +24,7 @@
 #   - AZURE_TENANT_ID
 #   - AZURE_SUBSCRIPTION_ID
 #
+
 # Durée moyenne : 10-20 minutes
 # Coût par run : ~0.05€ (VM B2s, automatiquement supprimée)
 # ============================================================================
@@ -77,6 +78,7 @@ jobs:
           az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
           echo "✅ Connecté: $(az account show --query name -o tsv)"
+
 
       # ========================================
       # 3. Exécution du script de déploiement
