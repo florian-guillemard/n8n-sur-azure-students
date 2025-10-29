@@ -60,6 +60,26 @@ jobs:
           az vm show -g "$RG" -n "$VM" >/dev/null
           echo "✅ VM trouvée: $VM (RG: $RG)"
 
+      - name: Wait for cloud-init completion
+        run: |
+          echo "⏳ Attente fin cloud-init (max ~10 min)"
+          set +e
+          DONE=0
+          for i in {1..20}; do
+            OUT=$(az vm run-command invoke \
+              -g "$RG" -n "$VM" \
+              --command-id RunShellScript \
+              --scripts "cloud-init status --wait >/dev/null 2>&1; ec=$?; echo EXIT:$ec" \
+              --query 'value[0].message' -o tsv 2>/dev/null | tail -n1)
+            echo "[$i] $OUT"
+            echo "$OUT" | grep -q "EXIT:0" && DONE=1 && break
+            sleep 30
+          done
+          set -e
+          if [ "$DONE" -ne 1 ]; then
+            echo "⚠️ cloud-init pas terminé; on continue quand même"
+          fi
+
       - name: Wait for n8n (port 5678)
         run: |
           echo "⏳ Attente n8n sur 5678 (max 12 min)"
@@ -83,21 +103,20 @@ jobs:
             OUT=$(az vm run-command invoke \
               -g "$RG" -n "$VM" \
               --command-id RunShellScript \
-              --scripts "docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -i '^n8n ' || true" \
+              --scripts "set -e; which docker || true; docker --version || true; systemctl is-active docker || true; docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'" \
               --query 'value[0].message' -o tsv 2>/dev/null)
-            echo "[$i] run-command output:"; echo "$OUT" | tail -n 5
-            echo "$OUT" | grep -qi "^n8n" && FOUND=1 && break
+            echo "[$i] run-command output:"; echo "$OUT" | tail -n 15
+            echo "$OUT" | grep -qi "^n8n\b" && FOUND=1 && break
             sleep 30
           done
           set -e
           if [ "$FOUND" -ne 1 ]; then
-            echo "❌ n8n pas détecté via docker ps"
-            echo "==> Extrait cloud-init-output.log:" 
+            echo "❌ n8n non détecté (docker ps -a) — diagnostics:" 
             az vm run-command invoke \
               -g "$RG" -n "$VM" \
               --command-id RunShellScript \
-              --scripts "tail -n 100 /var/log/cloud-init-output.log || true" \
-              --query 'value[0].message' -o tsv | tail -n 100 || true
+              --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 120) =='; docker logs --tail 120 n8n || true; echo; echo '== cloud-init-output.log (tail 120) =='; tail -n 120 /var/log/cloud-init-output.log || true" \
+              --query 'value[0].message' -o tsv | tail -n 200 || true
             exit 1
           fi
           echo "✅ Conteneur n8n détecté"
