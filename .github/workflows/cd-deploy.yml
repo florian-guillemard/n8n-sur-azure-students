@@ -105,38 +105,19 @@ jobs:
           az vm show -g "$RG" -n "$VM" >/dev/null
           echo "✅ VM trouvée: $VM (RG: $RG)"
 
-      - name: Wait for cloud-init completion
+      - name: Wait for SSH (port 22) readiness
         run: |
-          echo "⏳ Attente fin cloud-init via boot-finished (max ~6 min)"
-          DONE=0
+          echo "⏳ Attente disponibilité SSH (22) (max 6 min)"
+          READY=0
           for i in {1..12}; do
-            OUT=$(az vm run-command invoke \
-              -g "$RG" -n "$VM" \
-              --command-id RunShellScript \
-              --scripts "if [ -f /var/lib/cloud/instance/boot-finished ]; then echo BOOT_FINISHED; else echo BOOT_PENDING; fi" \
-              --query 'value[0].message' -o tsv 2>/dev/null | tr -d '\r')
-            echo "[$i] $OUT"
-            echo "$OUT" | grep -q "BOOT_FINISHED" && DONE=1 && break
-            # Tous les 2 cycles: afficher un extrait et FAIL si erreurs détectées
-            if [ $((i % 2)) -eq 0 ]; then
-              LOG=$(az vm run-command invoke \
-                -g "$RG" -n "$VM" \
-                --command-id RunShellScript \
-                --scripts "tail -n 120 /var/log/cloud-init-output.log || true" \
-                --query 'value[0].message' -o tsv 2>/dev/null)
-              echo "$LOG" | tail -n 120
-              echo "$LOG" | grep -iE "(error|failed|traceback)" && {
-                echo "❌ Erreur détectée dans cloud-init — diagnostics:";
-                az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-                  --scripts "echo '== cloud-init status =='; cloud-init status || true; echo; echo '== cloud-init-output.log (tail 300) =='; tail -n 300 /var/log/cloud-init-output.log || true" \
-                  --query 'value[0].message' -o tsv | tail -n 320 || true;
-                exit 1;
-              }
+            if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$VM_IP/22" 2>/dev/null; then
+              echo "✅ SSH 22 joignable"; READY=1; break
             fi
+            echo "[$i] SSH non joignable..."
             sleep 30
           done
-          if [ "$DONE" -ne 1 ]; then
-            echo "❌ cloud-init non terminé après ~6 min — diagnostics:"
+          if [ "$READY" -ne 1 ]; then
+            echo "❌ SSH (22) non joignable après ~6 min — diagnostics:"
             az vm run-command invoke \
               -g "$RG" -n "$VM" \
               --command-id RunShellScript \
