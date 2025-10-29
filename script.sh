@@ -1,6 +1,74 @@
 #!/bin/bash
 set -euo pipefail
 
+# ============================================= Configuration =============================================
+BASENAME="projet-docker"
+ADMIN_USER="devopsadmin"
+VM_SIZE="Standard_B2s"
+
+RG_NAME="${BASENAME}-rg"
+VNET_NAME="${BASENAME}-vnet01"
+SUBNET_NAME="${BASENAME}-subnet01"
+NSG_NAME="${BASENAME}-nsg01"
+PUBLIC_IP_NAME="${BASENAME}-ip01"
+NIC_NAME="${BASENAME}-nic01"
+VM_NAME="${BASENAME}-vm01"
+
+# ============================================= Fonction de nettoyage =============================================
+cleanup_resources() {
+  echo ""
+  echo "=========================================="
+  echo "⚠️  SUPPRESSION DES RESSOURCES"
+  echo "=========================================="
+  echo ""
+  
+  # Vérifier si le RG existe
+  if ! az group show --name "$RG_NAME" --output none 2>/dev/null; then
+    echo "❌ Le Resource Group '$RG_NAME' n'existe pas ou a déjà été supprimé"
+    exit 0
+  fi
+  
+  echo "Cette action va supprimer :"
+  echo "  • Resource Group : $RG_NAME"
+  echo "  • VM et tous ses disques"
+  echo "  • Réseau (VNet, Subnet, NSG, NIC)"
+  echo "  • IP publique"
+  echo "  • Toutes les ressources associées"
+  echo ""
+  
+  # Afficher les ressources existantes
+  echo "Ressources actuelles :"
+  az resource list --resource-group "$RG_NAME" --query "[].{Nom:name, Type:type}" -o table
+  
+  echo ""
+  echo "⏱ Temps estimé : 10-20 minutes"
+  echo ""
+  read -p "Êtes-vous sûr de vouloir tout supprimer ? (oui/non) : " confirm
+  
+  if [ "$confirm" = "oui" ] || [ "$confirm" = "OUI" ]; then
+    echo ""
+    echo "==> Suppression du Resource Group en cours..."
+    az group delete --name "$RG_NAME" --yes --no-wait
+    echo "✓ Suppression lancée en arrière-plan"
+    echo ""
+    echo "Pour suivre la progression :"
+    echo "  az group show --name $RG_NAME --query \"properties.provisioningState\" -o tsv"
+    echo "  # Retournera une erreur quand supprimé complètement"
+    echo ""
+  else
+    echo "❌ Suppression annulée"
+    echo ""
+  fi
+  
+  exit 0
+}
+
+# ============================================= Mode Nettoyage =============================================
+# Si --cleanup est passé, exécuter nettoyage et sortir
+if [ "${1:-}" = "--cleanup" ]; then
+  cleanup_resources
+fi
+
 # ============================================= Détection OS =============================================
 detect_os() {
   if [ "$(uname)" = "Darwin" ]; then
@@ -62,7 +130,6 @@ az upgrade --yes 2>/dev/null || true
 
 az login
 
-
 # Récupération de l'ID de subscription
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 
@@ -115,19 +182,6 @@ echo "=========================================="
 echo ""
 echo "⏱ Pause 5 secondes avant déploiement..."
 sleep 5
-
-# ============================================= Configuration =============================================
-BASENAME="projet-docker"
-ADMIN_USER="devopsadmin"
-VM_SIZE="Standard_B2s"
-
-RG_NAME="${BASENAME}-rg"
-VNET_NAME="${BASENAME}-vnet01"
-SUBNET_NAME="${BASENAME}-subnet01"
-NSG_NAME="${BASENAME}-nsg01"
-PUBLIC_IP_NAME="${BASENAME}-ip01"
-NIC_NAME="${BASENAME}-nic01"
-VM_NAME="${BASENAME}-vm01"
 
 # ============================================= Resource Group =============================================
 echo "==> Vérification du groupe de ressources : $RG_NAME"
@@ -197,17 +251,16 @@ write_files:
         -v n8n_/home/node/.n8n \
         --restart unless-stopped \
         n8nio/n8n
-      
+
       echo "Installation completed successfully"
 
 runcmd:
   - /tmp/setup-docker.sh
   - sed -i 's/#Port 22/Port 22\nPort 443/' /etc/ssh/sshd_config
   - systemctl restart sshd
+
 CLOUDEOF
 )
-
-
 # ============================================= Réseau Azure =============================================
 echo ""
 echo "==> Création VNet/Subnet"
@@ -320,5 +373,9 @@ echo "🔒 Sécurité :"
 echo "  ⚠ NSG ouvert à tous (*) - À restreindre en production !"
 echo "  ⚠ Credentials en clair - À changer immédiatement !"
 echo "  ⚠ Pas de HTTPS - À configurer avec reverse proxy + Let's Encrypt"
+echo ""
+echo "🗑️  Nettoyage :"
+echo "  Pour supprimer toutes les ressources :"
+echo "    $0 --cleanup"
 echo ""
 echo "=========================================="
