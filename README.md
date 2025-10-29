@@ -1,90 +1,70 @@
-# n8n Azure Deployment
+README — Automatisation complète du déploiement et configuration de n8n sur Azure
 
-## 📋 Description
+Ce projet contient 2 scripts Bash distincts, complémentaires, accompagnant un déploiement automatisé d’un serveur n8n sur une machine virtuelle Azure, suivi d’une configuration simple via l’interface n8n.
 
-Script de déploiement de n8n sur Azure VM. Chaque utilisateur lance le script sur sa propre machine avec son compte Azure.
+Script 1 – Déploiement Azure automatisé ( deploy_n8n_azure.sh )
+Fonctionnalités principales
+	•	Vérifie et installe Azure CLI si nécessaire.
+	•	Authentifie l’utilisateur sur Azure.
+	•	Récupère la liste des régions autorisées via la politique Azure.
+	•	Crée les ressources Azure nécessaires (Resource Group, réseau virtuel, sous-réseau, groupes de sécurité).
+	•	Configure les règles du groupe de sécurité pour ouvrir SSH (ports 22 et 443) et le port 5678 de n8n.
+	•	Génère une paire de clés SSH locale pour la VM ( ~/.ssh/n8n_azure ).
+	•	Crée une machine virtuelle Debian 11 avec cloud-init :
+	•	Installe Docker.
+	•	Lance automatiquement un conteneur n8n avec authentification basique (admin/admin123).
+	•	Attend que le service n8n soit disponible sur le port 5678 de la VM.
+	•	Affiche les informations d’accès (IP publique, SSH, credentials par défaut).
 
-## 🚀 Utilisation
+Comment utiliser
+	1.	Rendre le script exécutable :
+  `chmod +x deploy_n8n_azure.sh`
+  2. Lancer le script 
+  `./deploy_n8n_azure.sh`
+  3.	Se connecter à Azure via l’interface ouverte dans le navigateur pour autoriser le script.
+	4.	Le script s’occupe de tout le déploiement.
+	5.	À la fin, il affiche :
+	•	L’adresse IP publique de la machine.
+	•	Les accès SSH.
+	•	L’URL n8n (ex:  http://<IP>:5678 ).
 
-### Prérequis
+Nettoyage:
+	•	Pour supprimer toutes les ressources Azure et les clés SSH associées, lancer :
+  `./deploy_n8n_azure.sh --cleanup`
 
-1. Installer Azure CLI :
-```bash
-brew update && brew install azure-cli
-```
+Script 2 – Gestion simple de n8n ( n8n_manager.sh )
+Objectif
+Après que la VM et n8n soient déployés, ce script sert à configurer proprement n8n sans intervention manuelle lourde.
+Il permet de :
+	•	Créer un utilisateur administrateur n8n (en demandant IP, email, prénom, nom, mot de passe sécurisé).
+	•	Enregistrer et réutiliser la clé API automatiquement.
+	•	Charger des workflows JSON dans n8n via API.
+	•	Mettre à jour ou supprimer la clé API.
+Utilisation
+	1.	Copier et rendre exécutable :
+  `chmod +x n8n_manager.sh`
+  2. Lancer le script :
+  `./n8n_manager.sh`
+  3.	Suivre le menu interactif simple (création utilisateur, import workflow, gestion clé API).
 
-2. Se connecter à Azure :
-```bash
-az login
-```
+Enchaînement recommandé
+•	D’abord, lancer le script de déploiement Azure :  ./deploy_n8n_azure.sh  pour créer la VM et installer n8n.
+•	Une fois le service n8n accessible, lancer le deuxième script :  ./n8n_manager.sh  qui va créer un utilisateur administrateur n8n sécurisé et gérer les workflows.
 
-### Déploiement
+Structure du projet
+/
+├── deploy_n8n_azure.sh        # Script 1 : déploie VM Azure et n8n (administrateur)
+├── n8n_manager.sh             # Script 2 : configure n8n post-déploiement (étudiants)
+├── workflow/                  # Dossier contenant les workflows JSON à importer
+│   ├── workflow1.json
+│   ├── workflow2.json
+│   └── ...
+└── ~/.ssh/n8n_azure           # Clés SSH générées par le script 1
 
-1. Cloner le repo :
-```bash
-git clone <url-du-repo>
-cd n8n-sur-ton-poste
-```
 
-2. Rendre le script exécutable :
-```bash
-chmod +x script.sh
-```
-
-3. Lancer le déploiement :
-```bash
-./script.sh
-```
-
-Le script va :
-- ✅ Créer un groupe de ressources Azure
-- ✅ Créer une VM Debian
-- ✅ Afficher l'IP publique
-- ✅ Vous connecter automatiquement en SSH
-
-### Après la connexion SSH
-
-Une fois connecté à la VM, installez n8n :
-
-```bash
-# Installation de Docker
-sudo apt-get update
-sudo apt-get install -y curl
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
-
-# Installation de Docker Compose
-sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-
-# Création du docker-compose pour n8n
-mkdir -p ~/n8n-data
-cat > ~/docker-compose.yml << 'EOF'
-version: '3.8'
-services:
-  n8n:
-    image: n8nio/n8n:latest
-    restart: unless-stopped
-    ports:
-      - "5678:5678"
-    volumes:
-      - ./n8n-data:/home/node/.n8n
-EOF
-
-# Démarrage de n8n
-sudo docker-compose up -d
-```
-
-## 🌐 Accès à n8n
-
-Votre instance sera accessible sur : `http://VOTRE_IP:5678`
-
-Les identifiants seront créés lors de la première connexion dans le navigateur.
-
-## 🛠️ Technologies
-
-- Azure VM (Debian 11)
-- Docker & Docker Compose
-- n8n
+Important
+	•	Ports ouverts (22/443/5678) → À restreindre en production (firewall, NSG).
+	•	Pas de HTTPS natif dans ce déploiement → Ajouter un reverse proxy + certifiats SSL en production.
+	•	Clé SSH privée générée localement → Protéger votre machine.
 
 
