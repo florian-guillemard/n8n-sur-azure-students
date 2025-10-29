@@ -105,6 +105,47 @@ jobs:
           az vm show -g "$RG" -n "$VM" >/dev/null
           echo "✅ VM trouvée: $VM (RG: $RG)"
 
+      - name: Diagnostics détaillés (cloud-init + docker)
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "📋 Collecte des diagnostics depuis la VM..."
+          echo ""
+          echo "=========================================="
+          echo "== cloud-init status =="
+          echo "=========================================="
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "cloud-init status || true" \
+            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" || true
+          echo ""
+          echo "=========================================="
+          echo "== cloud-init-output.log (tail 300) =="
+          echo "=========================================="
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "tail -n 300 /var/log/cloud-init-output.log || true" \
+            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" | tail -n 300 || true
+          echo ""
+          echo "=========================================="
+          echo "== systemctl status docker =="
+          echo "=========================================="
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "systemctl status docker --no-pager || true" \
+            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" || true
+          echo ""
+          echo "=========================================="
+          echo "== docker ps -a =="
+          echo "=========================================="
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "docker ps -a || true" \
+            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" || true
+          echo ""
+          echo "=========================================="
+          echo "== docker logs n8n (tail 200) =="
+          echo "=========================================="
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "docker logs --tail 200 n8n 2>&1 || true" \
+            --query 'value[0].message' -o tsv 2>/dev/null | grep -v "This is a sample script" | grep -v "Optional parameters" | grep -v "Enable succeeded" | grep -v "\[std" | tail -n 200 || true
+
       - name: Wait for SSH (port 22) readiness
         run: |
           echo "⏳ Attente disponibilité SSH (22) (max 6 min)"
