@@ -35,8 +35,53 @@ jobs:
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
           echo "✅ Connecté: $(az account show --query name -o tsv)"
 
+      - name: Pre-clean previous resources (best effort)
+        run: |
+          RG_CANDIDATES=("projet-docker-rg" "projet-docker-rg-swe")
+          echo "🔎 Pré-nettoyage: vérification des RG possibles: ${RG_CANDIDATES[*]}"
+          for RGX in "${RG_CANDIDATES[@]}"; do
+            if az group show -n "$RGX" >/dev/null 2>&1; then
+              echo "🧹 RG existant détecté ($RGX) — suppression avant test"
+              az group delete -n "$RGX" --yes --no-wait || true
+            fi
+          done
+          # Attendre jusqu'à ~6 min que tous aient disparu
+          echo "⏳ Attente suppression complète (max ~6 min)"
+          for i in {1..18}; do
+            sleep 20
+            LEFT=()
+            for RGX in "${RG_CANDIDATES[@]}"; do
+              az group show -n "$RGX" >/dev/null 2>&1 && LEFT+=("$RGX")
+            done
+            if [ ${#LEFT[@]} -eq 0 ]; then
+              echo "✅ Aucun RG candidat restant"
+              break
+            else
+              echo "[${i}] RG restants: ${LEFT[*]}"
+            fi
+            if [ $i -eq 18 ]; then
+              echo "❌ Des RG existent encore après attente: ${LEFT[*]}" && exit 1
+            fi
+          done
+
       - name: Run script.sh
         run: |
+          # Create a shim to bypass interactive `az login` calls from the script
+          REAL_AZ=$(command -v az)
+          mkdir -p .ci-bin
+          cat > .ci-bin/az <<'AZWRAP'
+          #!/usr/bin/env bash
+          REAL_AZ="__REAL_AZ__"
+          if [ "$1" = "login" ]; then
+            echo "CI: skip az login (already authenticated)"
+            exit 0
+          fi
+          exec "$REAL_AZ" "$@"
+          AZWRAP
+          sed -i "s|__REAL_AZ__|$REAL_AZ|" .ci-bin/az
+          chmod +x .ci-bin/az
+          export PATH="$(pwd)/.ci-bin:$PATH"
+
           chmod +x script.sh
           set -o pipefail
           ./script.sh 2>&1 | tee deploy.log
@@ -62,49 +107,102 @@ jobs:
 
       - name: Wait for cloud-init completion
         run: |
-          echo "⏳ Attente fin cloud-init (max ~10 min, non-bloquant)"
+          echo "⏳ Attente fin cloud-init via boot-finished (max ~6 min)"
           DONE=0
-          for i in {1..20}; do
+          for i in {1..12}; do
             OUT=$(az vm run-command invoke \
               -g "$RG" -n "$VM" \
               --command-id RunShellScript \
-              --scripts "cloud-init status 2>&1 || true" \
+              --scripts "if [ -f /var/lib/cloud/instance/boot-finished ]; then echo BOOT_FINISHED; else echo BOOT_PENDING; fi" \
               --query 'value[0].message' -o tsv 2>/dev/null | tr -d '\r')
-            echo "[$i]"
-            echo "$OUT" | tail -n 10
-            echo "$OUT" | grep -q "status: done" && DONE=1 && break
+            echo "[$i] $OUT"
+            echo "$OUT" | grep -q "BOOT_FINISHED" && DONE=1 && break
+            # Tous les 2 cycles: afficher un extrait et FAIL si erreurs détectées
+            if [ $((i % 2)) -eq 0 ]; then
+              LOG=$(az vm run-command invoke \
+                -g "$RG" -n "$VM" \
+                --command-id RunShellScript \
+                --scripts "tail -n 120 /var/log/cloud-init-output.log || true" \
+                --query 'value[0].message' -o tsv 2>/dev/null)
+              echo "$LOG" | tail -n 120
+              echo "$LOG" | grep -iE "(error|failed|traceback)" && {
+                echo "❌ Erreur détectée dans cloud-init — diagnostics:";
+                az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+                  --scripts "echo '== cloud-init status =='; cloud-init status || true; echo; echo '== cloud-init-output.log (tail 300) =='; tail -n 300 /var/log/cloud-init-output.log || true" \
+                  --query 'value[0].message' -o tsv | tail -n 320 || true;
+                exit 1;
+              }
+            fi
             sleep 30
           done
           if [ "$DONE" -ne 1 ]; then
-            echo "⚠️ cloud-init pas terminé après ~10 min; on continue quand même"
+            echo "❌ cloud-init non terminé après ~6 min — diagnostics:"
+            az vm run-command invoke \
+              -g "$RG" -n "$VM" \
+              --command-id RunShellScript \
+              --scripts "echo '== cloud-init status =='; cloud-init status || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
+              --query 'value[0].message' -o tsv | tail -n 220 || true
+            exit 1
           fi
 
       - name: Wait for n8n (port 5678)
         run: |
-          echo "⏳ Attente n8n sur 5678 (max 12 min)"
+          echo "⏳ Attente n8n sur 5678 (max 6 min)"
           set +e
           READY=""; CODE="000"
-          for i in {1..24}; do
+          for i in {1..12}; do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://$VM_IP:5678 || echo "000")
             echo "[$i] HTTP=$CODE"
             if [ "$CODE" != "000" ]; then READY=1; break; fi
+            # Tous les 2 cycles: si erreurs dans cloud-init, fail direct
+            if [ $((i % 2)) -eq 0 ]; then
+              LOG=$(az vm run-command invoke \
+                -g "$RG" -n "$VM" \
+                --command-id RunShellScript \
+                --scripts "tail -n 120 /var/log/cloud-init-output.log || true" \
+                --query 'value[0].message' -o tsv 2>/dev/null)
+              echo "$LOG" | tail -n 60
+              echo "$LOG" | grep -iE "(error|failed|traceback)" && {
+                echo "❌ Erreur détectée dans cloud-init pendant l'attente HTTP — diagnostics:";
+                az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+                  --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 150) =='; docker logs --tail 150 n8n || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
+                  --query 'value[0].message' -o tsv | tail -n 240 || true;
+                exit 1;
+              }
+            fi
             sleep 30
           done
           set -e
-          if [ -z "$READY" ]; then echo "⚠️ HTTP pas prêt, on vérifie docker"; fi
+          if [ -z "$READY" ]; then
+            echo "❌ n8n ne répond pas après ~6 min — diagnostics:"
+            az vm run-command invoke \
+              -g "$RG" -n "$VM" \
+              --command-id RunShellScript \
+              --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 150) =='; docker logs --tail 150 n8n || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
+              --query 'value[0].message' -o tsv | tail -n 240 || true
+            exit 1
+          fi
 
       - name: Verify n8n container via RunCommand
         run: |
-          echo "🔍 Vérification docker sur la VM"
+          echo "🔍 Vérification docker sur la VM (max 6 min)"
           set +e
           FOUND=0
-          for i in {1..24}; do
+          for i in {1..12}; do
             OUT=$(az vm run-command invoke \
               -g "$RG" -n "$VM" \
               --command-id RunShellScript \
               --scripts "set -e; which docker || true; docker --version || true; systemctl is-active docker || true; docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'" \
               --query 'value[0].message' -o tsv 2>/dev/null)
             echo "[$i] run-command output:"; echo "$OUT" | tail -n 15
+            # Si conteneur n8n 'Exited', échoue immédiatement avec logs
+            echo "$OUT" | grep -qi "^n8n\b.*Exited" && {
+              echo "❌ Conteneur n8n en état Exited — diagnostics:";
+              az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+                --scripts "echo '== docker logs n8n (tail 200) =='; docker logs --tail 200 n8n || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
+                --query 'value[0].message' -o tsv | tail -n 220 || true;
+              exit 1;
+            }
             echo "$OUT" | grep -qi "^n8n\b" && FOUND=1 && break
             sleep 30
           done
@@ -114,8 +212,8 @@ jobs:
             az vm run-command invoke \
               -g "$RG" -n "$VM" \
               --command-id RunShellScript \
-              --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 120) =='; docker logs --tail 120 n8n || true; echo; echo '== cloud-init-output.log (tail 120) =='; tail -n 120 /var/log/cloud-init-output.log || true" \
-              --query 'value[0].message' -o tsv | tail -n 200 || true
+              --scripts "echo '== systemctl status docker =='; systemctl status docker --no-pager || true; echo; echo '== docker ps -a =='; docker ps -a || true; echo; echo '== docker logs n8n (tail 150) =='; docker logs --tail 150 n8n || true; echo; echo '== cloud-init-output.log (tail 200) =='; tail -n 200 /var/log/cloud-init-output.log || true" \
+              --query 'value[0].message' -o tsv | tail -n 240 || true
             exit 1
           fi
           echo "✅ Conteneur n8n détecté"
@@ -158,9 +256,21 @@ jobs:
       - name: Cleanup RG (always)
         if: always()
         run: |
-          if [ -n "${RG:-}" ]; then
-            az group delete -n "$RG" --yes --no-wait || true
-            echo "🧹 Suppression du resource group lancée (async)"
-          else
-            echo "ℹ️ RG non défini, rien à supprimer"
+          # Supprimer le RG extrait + noms de fallback, quoi qu'il arrive
+          CAND=( )
+          if [ -n "${RG:-}" ]; then CAND+=("$RG"); fi
+          CAND+=("projet-docker-rg" "projet-docker-rg-swe")
+          # Dédupliquer
+          UNIQUE=()
+          for x in "${CAND[@]}"; do
+            SKIP=0; for y in "${UNIQUE[@]}"; do [ "$x" = "$y" ] && SKIP=1 && break; done; [ $SKIP -eq 0 ] && UNIQUE+=("$x");
+          done
+          if [ ${#UNIQUE[@]} -eq 0 ]; then
+            echo "ℹ️ Aucun nom de RG connu; rien à supprimer"
+            exit 0
           fi
+          echo "🧹 Suppression des RG (async): ${UNIQUE[*]}"
+          for RGX in "${UNIQUE[@]}"; do
+            az group delete -n "$RGX" --yes --no-wait || true
+          done
+          echo "🧹 Cleanup déclenché (les suppressions se poursuivent côté Azure)"
