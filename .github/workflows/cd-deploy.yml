@@ -88,6 +88,22 @@ jobs:
 
       - name: Run script.sh
         run: |
+          # Create a shim to bypass interactive `az login` calls from the script
+          REAL_AZ=$(command -v az)
+          mkdir -p .ci-bin
+          cat > .ci-bin/az <<'AZWRAP'
+          #!/usr/bin/env bash
+          REAL_AZ="__REAL_AZ__"
+          if [ "$1" = "login" ]; then
+            echo "CI: skip az login (already authenticated)"
+            exit 0
+          fi
+          exec "$REAL_AZ" "$@"
+          AZWRAP
+          sed -i "s|__REAL_AZ__|$REAL_AZ|" .ci-bin/az
+          chmod +x .ci-bin/az
+          export PATH="$(pwd)/.ci-bin:$PATH"
+          
           chmod +x script.sh
           set -o pipefail
           ./script.sh 2>&1 | tee deploy.log
