@@ -60,7 +60,7 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 
 ### Fonctionnalités principales
 
-- Vérifie et installe Azure CLI si nécessaire
+- Vérifie et installe Azure CLI sur le pc hôte (local) si nécessaire
 - Authentifie l'utilisateur sur Azure
 - Récupère la liste des régions autorisées via la politique Azure
 - Crée les ressources Azure nécessaires (Resource Group, réseau virtuel, sous-réseau, groupes de sécurité)
