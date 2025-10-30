@@ -23,6 +23,7 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
 <img width="557" height="779" alt="Screenshot 2025-10-30 at 10 43 40" src="https://github.com/user-attachments/assets/90697c63-ff7e-4c75-981a-e0b92ae8ea6b" />
 
 	3.	Complétez le formulaire de vérification d’identité étudiante, validez votre statut en utilisant votre adresse mail scolaire. 
+	
 	<img width="766" height="751" alt="Screenshot 2025-10-30 at 10 42 40" src="https://github.com/user-attachments/assets/20d5d40a-f7be-4fc2-8628-81e00174eb73" />
 	
 	4. Activez la vérification en deux étapes (2FA) pour renforcer la sécurité de votre compte. Cette étape consiste à configurer une méthode d’authentification supplémentaire, comme 	l’application Microsoft Authenticator ou une vérification par téléphone.
