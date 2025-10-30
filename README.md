@@ -22,11 +22,14 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
 		
 <img width="557" height="779" alt="Screenshot 2025-10-30 at 10 43 40" src="https://github.com/user-attachments/assets/90697c63-ff7e-4c75-981a-e0b92ae8ea6b" />
 
-	3.	Complétez le formulaire de vérification d’identité étudiante, validez votre statut en utilisant votre adresse mail scolaire. 
+	3.	Complétez le formulaire de vérification d’identité étudiante, validez votre statut en utilisant votre adresse
+	mail scolaire. 
 	
 <img width="766" height="751" alt="Screenshot 2025-10-30 at 10 42 40" src="https://github.com/user-attachments/assets/75144e1e-93e9-4578-b044-253a793c0b20" />
 
-	4. Activez la vérification en deux étapes (2FA) pour renforcer la sécurité de votre compte. Cette étape consiste à configurer une méthode d’authentification supplémentaire, comme 	l’application Microsoft Authenticator ou une vérification par téléphone.
+	4. Activez la vérification en deux étapes (2FA) pour renforcer la sécurité de votre compte. 
+	Cette étape consiste à configurer une méthode d’authentification supplémentaire, comme 	l’application
+	Microsoft Authenticator ou une vérification par téléphone.
 	
 <img width="494" height="419" alt="Screenshot 2025-10-30 at 10 39 54" src="https://github.com/user-attachments/assets/b692c9ef-be3c-44c9-bb80-2f12e7731364" />
 <img width="810" height="544" alt="Screenshot 2025-10-30 at 10 40 09" src="https://github.com/user-attachments/assets/26f63f44-c438-4235-9990-b85d46656f2d" />
@@ -35,9 +38,10 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
 <img width="891" height="434" alt="Screenshot 2025-10-30 at 10 40 59" src="https://github.com/user-attachments/assets/4426c262-c67c-47d7-ab1b-82eb095ac720" />
 
 	
-	5.	Une fois votre compte vérifié, vous recevrez un crédit gratuit valable 12 mois pour utiliser les services Azure. Vous pourrez renouveler cette offre tant que vous êtes étudiant.
+	5.	Une fois votre compte vérifié, vous recevrez un crédit gratuit valable 12 mois pour utiliser
+	les services Azure. Vous pourrez renouveler cette offre tant que vous êtes étudiant.
 	
-	<img width="1509" height="755" alt="Screenshot 2025-10-30 at 10 45 25" src="https://github.com/user-attachments/assets/36c54ae7-427b-467b-b90c-a8d6dffe533f" />
+<img width="1509" height="755" alt="Screenshot 2025-10-30 at 10 45 25" src="https://github.com/user-attachments/assets/36c54ae7-427b-467b-b90c-a8d6dffe533f" />
 
 Ces étapes vous permettront d’accéder facilement à un environnement cloud pour vos projets et apprentissages.
 
