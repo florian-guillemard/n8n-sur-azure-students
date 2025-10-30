@@ -14,8 +14,8 @@
 #    Les ressources sont TOUJOURS supprimées après validation
 #
 # Déclencheurs :
-#   - Push sur main
-#   - Pull Request vers main
+#   - Push sur main (sauf fichiers .md et .gitignore)
+#   - Pull Request vers main (sauf fichiers .md et .gitignore)
 #   - Déclenchement manuel
 #
 # Prérequis (secrets GitHub) :
@@ -34,8 +34,16 @@ name: CI - Validation deploy_n8n_azure.sh (VM + n8n)
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - '*.md'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - '*.md'
+      - '.gitignore'
   workflow_dispatch:
 
 jobs:
@@ -78,14 +86,16 @@ jobs:
 
 
       # ========================================
-      # 3. Exécution du script de déploiement
+      # 3. Nettoyage préalable (pré-cleanup)
       # ========================================
-      # Lance deploy_n8n_azure.sh et capture la sortie dans deploy.log
-      # Le script crée : Resource Group, VNet, NSG, VM, et installe n8n
+      # Supprime les ressources potentiellement existantes d'un run précédent
+      # pour éviter les conflits (ex: clés SSH, IPs, etc.)
 
-      - name: Run deploy_n8n_azure.sh
+      - name: Pre-cleanup
         run: |
-          # Create a shim to bypass interactive `az login` and `az upgrade` calls
+          echo "🧹 Nettoyage des ressources préexistantes..."
+          
+          # Créer le shim az pour éviter les interactions
           REAL_AZ=$(command -v az)
           mkdir -p .ci-bin
           cat > .ci-bin/az <<'AZWRAP'
@@ -108,12 +118,27 @@ jobs:
           chmod +x .ci-bin/az
           export PATH="$(pwd)/.ci-bin:$PATH"
           
+          # Rendre le script exécutable et lancer le cleanup
           chmod +x deploy_n8n_azure.sh
+          ./deploy_n8n_azure.sh --cleanup || true
+          
+          echo "✅ Pre-cleanup terminé"
+
+
+      # ========================================
+      # 4. Exécution du script de déploiement
+      # ========================================
+      # Lance deploy_n8n_azure.sh et capture la sortie dans deploy.log
+      # Le script crée : Resource Group, VNet, NSG, VM, et installe n8n
+
+      - name: Run deploy_n8n_azure.sh
+        run: |
+          export PATH="$(pwd)/.ci-bin:$PATH"
           set -o pipefail
           ./deploy_n8n_azure.sh 2>&1 | tee deploy.log
 
       # ========================================
-      # 4. Extraction des informations de déploiement
+      # 5. Extraction des informations de déploiement
       # ========================================
       # Parse le log pour récupérer :
       #   - RG : Nom du Resource Group
@@ -142,7 +167,7 @@ jobs:
           fi
 
       # ========================================
-      # 5. Vérification de la VM sur Azure
+      # 6. Vérification de la VM sur Azure
       # ========================================
       # Confirme que la VM existe bien dans Azure
 
@@ -152,7 +177,7 @@ jobs:
           echo "✅ VM trouvée: $VM (RG: $RG)"
 
       # ========================================
-      # 6. Test de disponibilité de n8n
+      # 7. Test de disponibilité de n8n
       # ========================================
       # Attend que n8n réponde sur le port 5678 (max 8 minutes)
       # Codes HTTP acceptés :
@@ -193,7 +218,7 @@ jobs:
           fi
 
       # ========================================
-      # 7. Génération du résumé
+      # 8. Génération du résumé
       # ========================================
       # Crée un résumé visible dans l'interface GitHub Actions
       # Affiche le statut (succès/échec) et les infos de la VM
@@ -216,7 +241,7 @@ jobs:
           fi
 
       # ========================================
-      # 8. Nettoyage des ressources Azure
+      # 9. Nettoyage des ressources Azure
       # ========================================
       # TOUJOURS exécuté (succès ou échec)
       # Utilise la fonction --cleanup du script pour supprimer toutes les ressources
@@ -234,3 +259,4 @@ jobs:
           ./deploy_n8n_azure.sh --cleanup || true
           
           echo "✅ Cleanup terminé"
+
