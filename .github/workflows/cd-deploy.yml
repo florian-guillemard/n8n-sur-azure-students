@@ -122,6 +122,30 @@ jobs:
           chmod +x deploy_n8n_azure.sh
           ./deploy_n8n_azure.sh --cleanup || true
           
+          echo "✅ Pre-cleanup lancé"
+          
+          # Attendre que les Resource Groups soient vraiment supprimés
+          echo "⏳ Attente de la suppression complète des ressources (max 5 min)..."
+          RG_LIST=("projet-docker-rg" "projet-docker-rg-swe")
+          
+          for attempt in {1..30}; do
+            ALL_DELETED=true
+            for rg in "${RG_LIST[@]}"; do
+              if $REAL_AZ group show -n "$rg" >/dev/null 2>&1; then
+                ALL_DELETED=false
+                echo "  [${attempt}/30] $rg existe encore..."
+                break
+              fi
+            done
+            
+            if [ "$ALL_DELETED" = true ]; then
+              echo "✅ Toutes les ressources sont supprimées"
+              break
+            fi
+            
+            sleep 10
+          done
+          
           echo "✅ Pre-cleanup terminé"
 
 
