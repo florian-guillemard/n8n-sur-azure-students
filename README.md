@@ -145,10 +145,12 @@ Sur la nouvelle page qui s'ouvre, choisissez "n8n api":
 Ensuite, cliquer sur "Create an API Key":
 <img width="1234" height="405" alt="Screenshot 2025-10-30 at 11 30 47" src="https://github.com/user-attachments/assets/49e8963d-0916-4df1-865f-534c709f7bcc" />
 
-Nommer la clé:
+Nommer la clé comme voulu:
+
 <img width="607" height="498" alt="Screenshot 2025-10-30 at 11 30 52" src="https://github.com/user-attachments/assets/ec0b28ae-7218-427b-a6be-c71f862d563b" />
 
 [Etape Importante] Copier la clé API et coller la dans le terminal, une fois le menu fermé, vous ne pourrez plus récupérer la clé API:
+
 <img width="604" height="340" alt="Screenshot 2025-10-30 at 11 30 56" src="https://github.com/user-attachments/assets/e918c349-ba3b-42b2-acf9-f5a1886c2dd9" />
 <img width="492" height="74" alt="Screenshot 2025-10-30 at 11 33 16" src="https://github.com/user-attachments/assets/c2700d85-8686-4ac8-b3db-28d25a042b10" />
 
