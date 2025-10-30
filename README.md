@@ -96,6 +96,17 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 
 <img width="833" height="446" alt="Screenshot 2025-10-30 at 13 40 08" src="https://github.com/user-attachments/assets/d987929a-6d57-40f2-8d01-f486cb838b9a" />
 
+### Arrêt et reprise de l'activité de la Virtual Machine
+[Attention cette option ne supprime pas la machine virtuelle, elle continue à être facturée]
+
+Pour stopper la VM temporairement, vous pouvez relance le script avec l'option `--stop`:
+
+<img width="1104" height="242" alt="image" src="https://github.com/user-attachments/assets/aa1811fa-19e6-4476-b6ad-e6e6ccfaab06" />
+
+Pour relancer la VM après un arrêt, il faut utiliser l'option `--start`:
+
+<img width="1074" height="168" alt="image" src="https://github.com/user-attachments/assets/e399f4d6-0d14-4b6c-93ea-dea352a666dc" />
+
 
 ### Nettoyage
 
