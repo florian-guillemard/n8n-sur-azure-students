@@ -5,9 +5,13 @@ Ce projet contient 2 scripts Bash distincts, complémentaires, accompagnant un d
 ## Création d’un compte Azure for Students
 Pour bénéficier des crédits gratuits et des services Azure spécifiques aux étudiants, suivez ces étapes pour créer votre compte Azure for Students :
 	1.	Rendez-vous sur la page officielle Azure for Students : https://azure.microsoft.com/fr-fr/free/students  
+	
 	<img width="1512" height="759" alt="Screenshot 2025-10-30 at 10 37 43" src="https://github.com/user-attachments/assets/7b2f77da-381c-4223-88a5-3f5f6c9fa16c" />
-	2.	Connectez-vous avec votre adresse mail universitaire ou scolaire, ou créez un compte Microsoft si vous n’en avez pas. !Insérer image de la page de connexion
+	
+	2.	Connectez-vous avec votre adresse mail universitaire ou scolaire en cliquant sur "COMMENCEZ GRATUITEMENT" :
+	
 <img width="557" height="779" alt="Screenshot 2025-10-30 at 10 43 40" src="https://github.com/user-attachments/assets/90697c63-ff7e-4c75-981a-e0b92ae8ea6b" />
+
 		- *Vous devrez vous connecter avec le compte [supdevinci-edu.fr](http://supdevinci-edu.fr/)*
 		- *Remplir les formulaires*
     	- *Prénom*
@@ -15,9 +19,13 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
     	- *Pays*
     	- *Nom de l’établissement scolaire : Sup de Vinci (Bordeaux)*
     	- *….*
+		
 	3.	Complétez le formulaire de vérification d’identité étudiante, validez votre statut en utilisant votre adresse mail scolaire. 
+	
 	<img width="766" height="751" alt="Screenshot 2025-10-30 at 10 42 40" src="https://github.com/user-attachments/assets/20d5d40a-f7be-4fc2-8628-81e00174eb73" />
+	
 	4. Activez la vérification en deux étapes (2FA) pour renforcer la sécurité de votre compte. Cette étape consiste à configurer une méthode d’authentification supplémentaire, comme 	l’application Microsoft Authenticator ou une vérification par téléphone.
+	
 <img width="494" height="419" alt="Screenshot 2025-10-30 at 10 39 54" src="https://github.com/user-attachments/assets/b692c9ef-be3c-44c9-bb80-2f12e7731364" />
 <img width="810" height="544" alt="Screenshot 2025-10-30 at 10 40 09" src="https://github.com/user-attachments/assets/26f63f44-c438-4235-9990-b85d46656f2d" />
 <img width="782" height="477" alt="Screenshot 2025-10-30 at 10 40 18" src="https://github.com/user-attachments/assets/ff3b50e6-8f6b-4143-8e86-75eb88a399e5" />
@@ -26,6 +34,7 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
 
 	
 	5.	Une fois votre compte vérifié, vous recevrez un crédit gratuit valable 12 mois pour utiliser les services Azure. Vous pourrez renouveler cette offre tant que vous êtes étudiant.
+	
 	<img width="1509" height="755" alt="Screenshot 2025-10-30 at 10 45 25" src="https://github.com/user-attachments/assets/36c54ae7-427b-467b-b90c-a8d6dffe533f" />
 
 Ces étapes vous permettront d’accéder facilement à un environnement cloud pour vos projets et apprentissages.
