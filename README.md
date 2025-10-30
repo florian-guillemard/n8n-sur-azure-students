@@ -49,8 +49,8 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 
 ## Aperçu des scripts
 
-| Script | Description | Utilisateur cible |
-|--------|-------------|-------------------|
+| Script | Description |
+|--------|-------------|
 | `deploy_n8n_azure.sh` | Déploie VM Azure Debian, installe Docker & n8n, ouvre les ports 
 | `n8n_manager.sh` | Configure l'utilisateur n8n, gère clé API et workflows | 
 
