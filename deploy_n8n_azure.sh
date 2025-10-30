@@ -4,22 +4,21 @@ set -euo pipefail
 # ============================================= Configuration =============================================
 # Définition des variables de configuration du déploiement
 BASENAME="projet-docker"             # Base name pour tous les ressources
-ADMIN_USER="devopsadmin"              # Nom d'utilisateur administrateur pour le VM
-VM_SIZE="Standard_B2s"                 # Taille de la machine virtuelle
+ADMIN_USER="devopsadmin"             # Nom d'utilisateur administrateur pour le VM
+VM_SIZE="Standard_B2s"               # Taille de la machine virtuelle
 
 # Noms des ressources Azure
-RG_NAME="${BASENAME}-rg"               # Resource Group
-VNET_NAME="${BASENAME}-vnet01"          # Virtual Network
-SUBNET_NAME="${BASENAME}-subnet01"      # Subnet
-NSG_NAME="${BASENAME}-nsg01"            # Network Security Group
-PUBLIC_IP_NAME="${BASENAME}-ip01"       # Adresse IP Publique
-NIC_NAME="${BASENAME}-nic01"             # Interface réseau (NIC)
-VM_NAME="${BASENAME}-vm01"               # Nom de la VM
+RG_NAME="${BASENAME}-rg"             # Resource Group
+VNET_NAME="${BASENAME}-vnet01"       # Virtual Network
+SUBNET_NAME="${BASENAME}-subnet01"   # Subnet
+NSG_NAME="${BASENAME}-nsg01"         # Network Security Group
+PUBLIC_IP_NAME="${BASENAME}-ip01"    # Adresse IP Publique
+NIC_NAME="${BASENAME}-nic01"         # Interface réseau (NIC)
+VM_NAME="${BASENAME}-vm01"           # Nom de la VM
 
-FORCE_CLEANUP=0                        # Flag pour forcer le nettoyage sans confirmation
+FORCE_CLEANUP=0                      # Flag pour forcer le nettoyage sans confirmation
 
 # ============================================= Fonction de nettoyage =============================================
-# Fonction pour supprimer toutes les ressources créées dans Azure, et éventuellement la clé SSH locale
 cleanup_resources() {
   echo ""
   echo "=========================================="
@@ -27,13 +26,11 @@ cleanup_resources() {
   echo "=========================================="
   echo ""
 
-  # Vérifier si le Resource Group existe d'abord
   if ! az group show --name "$RG_NAME" --output none 2>/dev/null; then
     echo "❌ Le Resource Group '$RG_NAME' n'existe pas ou a déjà été supprimé"
     exit 0
   fi
 
-  # Affichage des ressources qui seront supprimées
   echo "Cette action va supprimer :"
   echo "  • Resource Group : $RG_NAME"
   echo "  • VM et tous ses disques"
@@ -43,7 +40,6 @@ cleanup_resources() {
   echo "  • Clé SSH locale générée : ~/.ssh/azure_n8n et ~/.ssh/azure_n8n.pub"
   echo ""
 
-  # Liste des ressources existantes
   echo "Ressources actuelles :"
   az resource list --resource-group "$RG_NAME" --query "[].{Nom:name, Type:type}" -o table
 
@@ -51,7 +47,6 @@ cleanup_resources() {
   echo "⏱ Temps estimé : 10-20 minutes"
   echo ""
 
-  # Vérification de confirmation avant suppression, sauf si --force
   if [ $FORCE_CLEANUP -eq 0 ]; then
     read -r -p "Êtes-vous sûr de vouloir tout supprimer ? (oui/non) : " confirm
     if [ "$confirm" != "oui" ] && [ "$confirm" != "OUI" ]; then
@@ -62,12 +57,10 @@ cleanup_resources() {
     echo "⚡ Confirmation forcée activée : suppression sans prompt."
   fi
 
-  # Suppression du Resource Group (toutes ressources associées)
   echo ""
   echo "==> Suppression du Resource Group en cours..."
   az group delete --name "$RG_NAME" --yes --no-wait
 
-  # Attendre que la suppression soit terminée
   echo "⏱ Attente de la suppression complète du Resource Group..."
   while az group show --name "$RG_NAME" --output none 2>/dev/null; do
     echo "Suppression en cours..."
@@ -75,7 +68,6 @@ cleanup_resources() {
   done
   echo "✓ Resource Group supprimé."
 
-  # Suppression de la clé SSH locale si elle existe
   SSH_PRIV_KEY="${HOME:-${USERPROFILE}}/.ssh/azure_n8n"
   SSH_PUB_KEY="${SSH_PRIV_KEY}.pub"
 
@@ -92,8 +84,35 @@ cleanup_resources() {
   exit 0
 }
 
+# ============================================= Fonction pour stopper la VM =============================================
+stop_vm() {
+  echo ""
+  echo "=========================================="
+  echo "⏸️  Arrêt de la VM Azure : $VM_NAME"
+  echo "=========================================="
+  if ! az vm stop --resource-group "$RG_NAME" --name "$VM_NAME"; then
+    echo "❌ Impossible d'arrêter la VM : $VM_NAME"
+    exit 1
+  fi
+  echo "✓ VM arrêtée."
+  exit 0
+}
+
+# ============================================= Fonction pour démarrer la VM =============================================
+start_vm() {
+  echo ""
+  echo "=========================================="
+  echo "▶️  Démarrage de la VM Azure : $VM_NAME"
+  echo "=========================================="
+  if ! az vm start --resource-group "$RG_NAME" --name "$VM_NAME"; then
+    echo "❌ Impossible de démarrer la VM : $VM_NAME"
+    exit 1
+  fi
+  echo "✓ VM démarrée."
+  exit 0
+}
+
 # ============================================= Argument parsing =============================================
-# Permet d'appeler la fonction de cleanup avec l'argument --cleanup, et de forcer la suppression avec --force
 for arg in "$@"; do
   case $arg in
     --cleanup)
@@ -102,23 +121,25 @@ for arg in "$@"; do
     --force)
       FORCE_CLEANUP=1
       ;;
+    --stop)
+      stop_vm
+      ;;
+    --start)
+      start_vm
+      ;;
     *)
       ;;
   esac
 done
 
 # ============================================= Détection OS =============================================
-# Fonction pour détecter le système d'exploitation
 detect_os() {
-  # Détection macOS
   if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "macOS"
-  # Détection Windows par environnement ou uname
   elif [[ "${OS:-}" =~ (Windows_NT) ]]; then
     echo "Windows"
   elif [[ "$(uname -o 2>/dev/null)" == "Msys" ]] || [[ "$(uname -o 2>/dev/null)" == "Cygwin" ]]; then
     echo "Windows"
-  # Détection Linux (Ubuntu, Debian, Fedora, etc.)
   elif [[ -f /etc/os-release ]]; then
     . /etc/os-release
     case "$ID" in
@@ -134,10 +155,8 @@ detect_os() {
   fi
 }
 
-# Définir la variable OS
 os=$(detect_os)
 
-# Vérification si le OS est supporté
 if [ "$os" = "unsupported" ]; then
   echo "ERREUR : Votre OS n'est pas inclus dans les distributions prises en charge."
   echo "Merci de voir avec le professeur pour une assistance adaptée."
@@ -145,7 +164,6 @@ if [ "$os" = "unsupported" ]; then
 fi
 
 # ============================================= Installation Azure CLI =============================================
-# Fonction pour installer Azure CLI en fonction du système d'exploitation
 install_azure_cli() {
   case "$os" in
     macOS)
@@ -203,24 +221,19 @@ install_azure_cli() {
   esac
 }
 
-install_azure_cli  # Appel de la fonction d'installation
+install_azure_cli
 
-# ============================================= Connexion Azure =============================================
-# Mise à jour d'Azure CLI et connexion
 echo "==> Mise à jour Azure CLI..."
 az upgrade --yes 2>/dev/null || true
 
 az login
 
-# Récupérer l'ID de l'abonnement Azure
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 if [ -z "$SUBSCRIPTION_ID" ]; then
   echo "ERREUR : Impossible de récupérer l'ID de subscription Azure."
   exit 1
 fi
 
-# ============================================= Sélection Région =============================================
-# Vérifier et récupérer les régions autorisées via la politique Azure
 echo ""
 echo "==> Vérification des régions autorisées..."
 ALLOWED_REGIONS=$(az policy assignment list \
@@ -240,26 +253,20 @@ if [ ${#POLICY_REGIONS[@]} -eq 0 ]; then
   exit 1
 fi
 
-# Afficher et sélectionner la région
 echo "Régions autorisées par Azure :"
 printf '  ✓ %s\n' "${POLICY_REGIONS[@]}"
 
-# AJOUTE ICI LA CONDITION :
 if [ "$os" = "Windows" ]; then
-  # Sur Windows (Git Bash/WSL), nettoyer les \r
   LOCATION=$(echo "${POLICY_REGIONS[0]}" | tr -d '\r')
 else
-  # Sur macOS/Linux, assignation classique
   LOCATION="${POLICY_REGIONS[0]}"
 fi
 
 echo ""
 echo "Région sélectionnée automatiquement : $LOCATION"
 
-# Définir le type de stockage
 DISK_SKU="Standard_LRS"
 
-# Affichage de la configuration
 echo ""
 echo "=========================================="
 echo "Configuration de déploiement :"
@@ -272,8 +279,6 @@ echo ""
 echo "⏱ Pause 5 secondes avant déploiement..."
 sleep 5
 
-# ============================================= Fonction pour générer une clé SSH =============================================
-# Génération d'une paire de clés SSH si aucune n'existe déjà
 generate_ssh_key() {
   SSH_KEY_PATH="${HOME:-${USERPROFILE}}/.ssh/azure_n8n"
   if [[ -f "$SSH_KEY_PATH" || -f "${SSH_KEY_PATH}.pub" ]]; then
@@ -285,44 +290,33 @@ generate_ssh_key() {
   echo "✓ Clé SSH générée."
 }
 
-generate_ssh_key  # Appel de la fonction
+generate_ssh_key
 
-# ============================================= Vérification / création Resource Group =============================================
-# Vérifier si le RG existe déjà et en créer un nouveau si nécessaire
 echo "==> Vérification du groupe de ressources : $RG_NAME"
 
 if az group show --name "$RG_NAME" --output none 2>/dev/null; then
-  # Si le RG existe, vérifier sa région
   EXISTING_LOC=$(az group show --name "$RG_NAME" --query location -o tsv)
   echo "✓ RG existant trouvé en région : $EXISTING_LOC"
-
   if [ "$EXISTING_LOC" != "$LOCATION" ]; then
-    # Si la région ne correspond pas, supprimer et recréer
     echo "❌ Conflit de région détecté ! Suppression du RG..."
     az group delete --name "$RG_NAME" --yes --no-wait
-
     echo "⏱ Attente suppression complète du RG..."
     while az group show --name "$RG_NAME" --output none 2>/dev/null; do
       echo "Suppression en cours..."
       sleep 10
     done
-
-    # Création du nouveau RG dans la bonne région
     echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
     az group create --name "$RG_NAME" --location "$LOCATION" --output none
   else
     echo "✓ RG en bonne région, on continue"
   fi
 else
-  # Si le RG n'existe pas, le créer
   echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
   az group create --name "$RG_NAME" --location "$LOCATION" --output none
 fi
 
 echo "✓ Resource Group prêt"
 
-# ============================================= Cloud-init YAML pour configuration initiale de la VM =============================================
-# Script cloud-init pour installer Docker, déployer n8n, et configurer SSH
 CLOUD_INIT_YAML=$(cat << 'CLOUDEOF'
 #cloud-config
 package_update: true
@@ -373,8 +367,6 @@ runcmd:
 CLOUDEOF
 )
 
-# ============================================= Création du réseau Azure (VNet, Subnet, NSG, IP, NIC) =============================================
-# Création du Virtual Network et Subnet
 echo ""
 echo "==> Création VNet/Subnet"
 if ! az network vnet create \
@@ -389,7 +381,6 @@ if ! az network vnet create \
   exit 1
 fi
 
-# Création du NSG (Security Group)
 echo "==> Création NSG"
 if ! az network nsg create \
   --resource-group "$RG_NAME" \
@@ -400,7 +391,6 @@ if ! az network nsg create \
   exit 1
 fi
 
-# Ajout des règles au NSG pour ouvrir SSH et N8N
 echo "==> Création règles NSG (SSH 22, n8n 5678)"
 az network nsg rule create \
   --resource-group "$RG_NAME" \
@@ -424,7 +414,6 @@ az network nsg rule create \
   --access Allow \
   -o none || { echo "Erreur création règle AllowN8N"; exit 1; }
 
-# Créer l'adresse IP publique
 echo "==> Création IP publique (Standard/Statique)"
 if ! az network public-ip create \
   --resource-group "$RG_NAME" \
@@ -437,7 +426,6 @@ if ! az network public-ip create \
   exit 1
 fi
 
-# Créer la NIC (interface réseau) attachée à la NSG et IP publique
 echo "==> Création NIC (attachement NSG + IP publique)"
 if ! az network nic create \
   --resource-group "$RG_NAME" \
@@ -452,8 +440,6 @@ if ! az network nic create \
   exit 1
 fi
 
-# ============================================= Création de la VM Debian avec cloud-init =============================================
-# Création de la VM avec configuration initiale via cloud-init (installation Docker, déploiement n8n)
 case "$os" in
   macOS)
     echo ""
@@ -496,14 +482,11 @@ case "$os" in
     ;;
 esac
 
-
-# Récupérer l'adresse IP publique générée
 PUBLIC_IP=$(az network public-ip show \
   --resource-group "$RG_NAME" \
   --name "$PUBLIC_IP_NAME" \
   --query ipAddress -o tsv)
 
-# ============================================= Résumé et vérification du service n8n =============================================
 echo ""
 echo "=========================================="
 echo "✅ Déploiement terminé avec succès !"
@@ -516,7 +499,6 @@ echo "  Région         : $LOCATION"
 echo "  IP Publique    : $PUBLIC_IP"
 echo ""
 
-# Attente que le service n8n soit accessible
 echo "⏳ Attente de la disponibilité de n8n..."
 MAX_RETRIES=180
 RETRY_COUNT=0
@@ -534,24 +516,24 @@ while true; do
   sleep 20
 done
 
-# Affichage des informations d'accès
-echo "🔗 Accès :"
-echo "  n8n Interface " : "http://$PUBLIC_IP:5678"
-echo "  SSH (port 22) " : "ssh -i ~/.ssh/azure_n8n $ADMIN_USER@$PUBLIC_IP"
+# ============================================= Affichage des commandes d'usage =============================================
 echo ""
-
-# Informations de suivi
+echo "📢 Commandes utiles :"
+echo "  Pour supprimer toutes les ressources :"
+echo "    $0 --cleanup [--force]"
+echo "  Pour arrêter la VM sans supprimer l'infrastructure :"
+echo "    $0 --stop"
+echo "  Pour redémarrer la VM arrêtée :"
+echo "    $0 --start"
+echo ""
+echo "🔗 Accès :"
+echo "  n8n Interface : http://$PUBLIC_IP:5678"
+echo "  SSH (port 22) : ssh -i ~/.ssh/azure_n8n $ADMIN_USER@$PUBLIC_IP"
+echo ""
 echo "  Suivi des logs : ssh -i ~/.ssh/azure_n8n $ADMIN_USER@$PUBLIC_IP 'sudo tail -f /var/log/cloud-init-output.log'"
 echo ""
-# Conseils sécurité
 echo "🔒 Sécurité :"
 echo "  ⚠ NSG ouvert à tous (*) - À restreindre en production !"
 echo "  ⚠ Credentials en clair - À changer immédiatement !"
 echo "  ⚠ Pas de HTTPS - À configurer avec reverse proxy + Let's Encrypt"
 echo ""
-# Commande pour nettoyer tous les ressources
-echo "🗑️  Nettoyage :"
-echo "  Pour supprimer toutes les ressources :"
-echo "    $0 --cleanup [--force]"
-echo ""
-echo "=========================================="
