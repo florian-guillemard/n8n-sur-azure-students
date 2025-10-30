@@ -93,7 +93,9 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 - L'adresse IP publique de la machine
 - Les accès SSH
 - L'URL n8n (ex: `http://<IP>:5678`)
-<img width="1702" height="1126" alt="image" src="https://github.com/user-attachments/assets/1a19cfbe-b0ab-4d6e-be68-55c8e4f76499" />
+
+<img width="833" height="446" alt="Screenshot 2025-10-30 at 13 40 08" src="https://github.com/user-attachments/assets/d987929a-6d57-40f2-8d01-f486cb838b9a" />
+
 
 ### Nettoyage
 
