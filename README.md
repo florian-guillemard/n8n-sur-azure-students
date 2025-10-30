@@ -125,15 +125,21 @@ chmod +x n8n_manager.sh
 
 
 3. **Suivre le menu interactif** :
+4. 
 [Lors du lancement de ce script, il faut en premier lieu choisir l'OPTION 1 pour configurer le compte administrateur]
+
 - Option 1 : Créer un utilisateur
+  
 <img width="570" height="430" alt="image" src="https://github.com/user-attachments/assets/48533e7d-213a-41e0-b59c-b8e7b8e34c01" />
+
 Il vous sera demandé de créer une clée API, pour cela, rendez vous sur l'interface N8N, connectez vous avec les informations configurées précédemment.
 En bas à gauche, cliquez sur le profil > "settings":
+
 <img width="1482" height="811" alt="Screenshot 2025-10-30 at 11 30 32" src="https://github.com/user-attachments/assets/2968a3d9-387b-41fa-a56e-9f7b3a0b8701" />
 <img width="282" height="114" alt="Screenshot 2025-10-30 at 11 30 37" src="https://github.com/user-attachments/assets/c3f85392-9804-42bc-9bc8-a3d7d69ac603" />
 
 Sur la nouvelle page qui s'ouvre, choisissez "n8n api":
+
 <img width="198" height="445" alt="Screenshot 2025-10-30 at 11 30 43" src="https://github.com/user-attachments/assets/e3151a9b-50b5-46f9-9740-0065cbfb7443" />
 
 Ensuite, cliquer sur "Create an API Key":
