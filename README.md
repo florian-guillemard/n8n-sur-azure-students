@@ -64,8 +64,8 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 - Authentifie l'utilisateur sur Azure
 - Récupère la liste des régions autorisées via la politique Azure
 - Crée les ressources Azure nécessaires (Resource Group, réseau virtuel, sous-réseau, groupes de sécurité)
-- Configure les règles du groupe de sécurité pour ouvrir SSH (ports 22 et 443) et le port 5678 de n8n
-- Génère une paire de clés SSH locale pour la VM (`~/.ssh/n8n_azure`)
+- Configure les règles du groupe de sécurité pour ouvrir SSH (ports 22) et le port 5678 de n8n
+- Génère une paire de clés SSH locale pour la VM (`~/.ssh/azure_n8n`)
 - Crée une machine virtuelle Debian 11 avec cloud-init :
   - Installe Docker
   - Lance automatiquement un conteneur n8n avec authentification basique (admin/admin123)
@@ -194,7 +194,7 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 	├── workflow1.json │
 	├── workflow2.json │
 	└── …
-└── ~/.ssh/n8n_azure           # Clés SSH générées par le script 1
+└── ~/.ssh/azure_n8n          # Clés SSH générées par le script 1
 ```
 
 
@@ -244,7 +244,7 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 ### Le service n8n ne démarre pas
 
 Vérifier les logs cloud-init :
-`ssh -i ~/.ssh/n8n_azure devopsadmin@ ‘sudo tail -f /var/log/cloud-init-output.log’`
+`ssh -i ~/.ssh/azure_n8n devopsadmin@ ‘sudo tail -f /var/log/cloud-init-output.log’`
 
 
 ### Impossible de se connecter en SSH
