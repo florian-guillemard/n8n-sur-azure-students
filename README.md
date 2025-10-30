@@ -98,7 +98,9 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 ### Nettoyage
 
 Pour supprimer toutes les ressources Azure et les clés SSH associées :
-`./deploy_n8n_azure.sh –cleanup`
+`./deploy_n8n_azure.sh –-cleanup`
+
+<img width="737" height="413" alt="Screenshot 2025-10-30 at 11 53 09" src="https://github.com/user-attachments/assets/79372ba7-7f39-4b24-ad18-dbb8dc50bd66" />
 
 ---
 
@@ -125,7 +127,7 @@ chmod +x n8n_manager.sh
 
 
 3. **Suivre le menu interactif** :
-4. 
+   
 [Lors du lancement de ce script, il faut en premier lieu choisir l'OPTION 1 pour configurer le compte administrateur]
 
 - Option 1 : Créer un utilisateur
