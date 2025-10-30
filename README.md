@@ -155,7 +155,9 @@ Nommer la clé:
 - Option 2 : Charger un workflow
 Une fois la clé précédemment chargée, vous pouvez importer les workflow:
 <img width="976" height="432" alt="image" src="https://github.com/user-attachments/assets/9735b721-2b59-4a03-9ecb-91c3a2f73062" />
+
 - Option 3 : Charger une nouvelle clé
+  
 - Option 4 : Quitter
 
 ---
