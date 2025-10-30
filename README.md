@@ -11,10 +11,8 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
 <img width="1512" height="759" alt="Screenshot 2025-10-30 at 10 37 43" src="https://github.com/user-attachments/assets/41892580-2328-4791-a16e-e62e8323ccae" />
 
 	2.	Connectez-vous avec votre adresse mail universitaire ou scolaire en cliquant sur "COMMENCEZ GRATUITEMENT" :
-	
-<img width="557" height="779" alt="Screenshot 2025-10-30 at 10 43 40" src="https://github.com/user-attachments/assets/90697c63-ff7e-4c75-981a-e0b92ae8ea6b" />
 
-		- *Vous devrez vous connecter avec le compte [supdevinci-edu.fr](http://supdevinci-edu.fr/)*
+		- *Vous devrez vous connecter avec le compte supdevinci-edu.fr*
 		- *Remplir les formulaires*
     	- *Prénom*
     	- *Nom*
@@ -22,6 +20,8 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
     	- *Nom de l’établissement scolaire : Sup de Vinci (Bordeaux)*
     	- *….*
 		
+<img width="557" height="779" alt="Screenshot 2025-10-30 at 10 43 40" src="https://github.com/user-attachments/assets/90697c63-ff7e-4c75-981a-e0b92ae8ea6b" />
+
 	3.	Complétez le formulaire de vérification d’identité étudiante, validez votre statut en utilisant votre adresse mail scolaire. 
 	<img width="766" height="751" alt="Screenshot 2025-10-30 at 10 42 40" src="https://github.com/user-attachments/assets/20d5d40a-f7be-4fc2-8628-81e00174eb73" />
 	
