@@ -6,10 +6,10 @@ Ce projet contient 2 scripts Bash distincts, complémentaires, accompagnant un d
 
 Pour bénéficier des crédits gratuits et des services Azure spécifiques aux étudiants, suivez ces étapes pour créer votre compte Azure for Students :
 	
-	1.	Rendez-vous sur la page officielle Azure for Students : https://azure.microsoft.com/fr-fr/free/students  
+	1.	Rendez-vous sur la page officielle Azure for Students : "https://azure.microsoft.com/fr-fr/free/students"  
 	
-	<img width="1512" height="759" alt="Screenshot 2025-10-30 at 10 37 43" src="https://github.com/user-attachments/assets/7b2f77da-381c-4223-88a5-3f5f6c9fa16c" />
-	
+<img width="1512" height="759" alt="Screenshot 2025-10-30 at 10 37 43" src="https://github.com/user-attachments/assets/41892580-2328-4791-a16e-e62e8323ccae" />
+
 	2.	Connectez-vous avec votre adresse mail universitaire ou scolaire en cliquant sur "COMMENCEZ GRATUITEMENT" :
 	
 <img width="557" height="779" alt="Screenshot 2025-10-30 at 10 43 40" src="https://github.com/user-attachments/assets/90697c63-ff7e-4c75-981a-e0b92ae8ea6b" />
