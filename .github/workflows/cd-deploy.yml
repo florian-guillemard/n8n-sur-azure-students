@@ -123,12 +123,31 @@ jobs:
       # ========================================
       # Supprime les ressources potentiellement existantes d'un run précédent
       # pour éviter les conflits (ex: clés SSH, IPs, etc.)
+      # Suppression directe des RG en CI (sans utiliser le script)
 
       - name: Pre-cleanup
         run: |
-          export PATH="$(pwd)/.ci-bin:$PATH"
           echo "🧹 Nettoyage des ressources préexistantes..."
-          ./deploy_n8n_azure.sh --cleanup || true
+          RG_NAME="projet-docker-rg"
+          
+          if az group show -n "$RG_NAME" >/dev/null 2>&1; then
+            echo "  → Suppression de $RG_NAME..."
+            az group delete -n "$RG_NAME" --yes --no-wait
+            
+            # Attendre que la suppression soit complète
+            echo "⏳ Attente de la suppression complète (max 10 min)..."
+            for attempt in {1..60}; do
+              if ! az group show -n "$RG_NAME" >/dev/null 2>&1; then
+                echo "✅ Resource Group supprimé"
+                break
+              fi
+              echo "  [${attempt}/60] $RG_NAME existe encore..."
+              sleep 10
+            done
+          else
+            echo "  ✓ $RG_NAME n'existe pas"
+          fi
+          
           echo "✅ Pre-cleanup terminé"
 
 
@@ -251,7 +270,7 @@ jobs:
       # 10. Nettoyage des ressources Azure
       # ========================================
       # TOUJOURS exécuté (succès ou échec)
-      # Utilise la fonction --cleanup du script pour supprimer toutes les ressources
+      # Suppression directe des RG pour garantir le nettoyage
       #
       # ⚠️ CRITIQUE : Évite les coûts Azure inutiles
       #    Aucune ressource ne reste après la CI
@@ -260,10 +279,14 @@ jobs:
         if: always()
         run: |
           echo "🧹 Nettoyage des ressources Azure..."
+          RG_NAME="projet-docker-rg"
           
-          # Utiliser la fonction --cleanup du script
-          export PATH="$(pwd)/.ci-bin:$PATH"
-          ./deploy_n8n_azure.sh --cleanup || true
-          
-          echo "✅ Cleanup terminé"
+          if az group show -n "$RG_NAME" >/dev/null 2>&1; then
+            echo "  → Suppression de $RG_NAME..."
+            az group delete -n "$RG_NAME" --yes --no-wait
+            echo "✅ Suppression lancée en arrière-plan"
+          else
+            echo "  ✓ $RG_NAME n'existe pas ou déjà supprimé"
+          fi
+
 
