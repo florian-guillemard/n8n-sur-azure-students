@@ -3,7 +3,9 @@
 Ce projet contient 2 scripts Bash distincts, complémentaires, accompagnant un déploiement automatisé d'un serveur n8n sur une machine virtuelle Azure, suivi d'une configuration simple via l'interface n8n.
 
 ## Création d’un compte Azure for Students
+
 Pour bénéficier des crédits gratuits et des services Azure spécifiques aux étudiants, suivez ces étapes pour créer votre compte Azure for Students :
+	
 	1.	Rendez-vous sur la page officielle Azure for Students : https://azure.microsoft.com/fr-fr/free/students  
 	
 	<img width="1512" height="759" alt="Screenshot 2025-10-30 at 10 37 43" src="https://github.com/user-attachments/assets/7b2f77da-381c-4223-88a5-3f5f6c9fa16c" />
