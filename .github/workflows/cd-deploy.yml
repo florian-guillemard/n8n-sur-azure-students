@@ -86,16 +86,14 @@ jobs:
 
 
       # ========================================
-      # 3. Nettoyage préalable (pré-cleanup)
+      # 3. Préparation du shim az
       # ========================================
-      # Supprime les ressources potentiellement existantes d'un run précédent
-      # pour éviter les conflits (ex: clés SSH, IPs, etc.)
+      # Crée un wrapper pour `az` qui ignore les commandes interactives
+      # (az login, az upgrade) car on est déjà connecté via Service Principal
+      # Ce shim sera utilisé par toutes les étapes suivantes
 
-      - name: Pre-cleanup
+      - name: Setup az shim
         run: |
-          echo "🧹 Nettoyage des ressources préexistantes..."
-          
-          # Créer le shim az pour éviter les interactions
           REAL_AZ=$(command -v az)
           mkdir -p .ci-bin
           cat > .ci-bin/az <<'AZWRAP'
@@ -116,41 +114,26 @@ jobs:
           AZWRAP
           sed -i "s|__REAL_AZ__|$REAL_AZ|" .ci-bin/az
           chmod +x .ci-bin/az
-          export PATH="$(pwd)/.ci-bin:$PATH"
-          
-          # Rendre le script exécutable et lancer le cleanup
           chmod +x deploy_n8n_azure.sh
+          echo "✅ Shim az créé"
+
+
+      # ========================================
+      # 4. Nettoyage préalable (pré-cleanup)
+      # ========================================
+      # Supprime les ressources potentiellement existantes d'un run précédent
+      # pour éviter les conflits (ex: clés SSH, IPs, etc.)
+
+      - name: Pre-cleanup
+        run: |
+          export PATH="$(pwd)/.ci-bin:$PATH"
+          echo "🧹 Nettoyage des ressources préexistantes..."
           ./deploy_n8n_azure.sh --cleanup || true
-          
-          echo "✅ Pre-cleanup lancé"
-          
-          # Attendre que les Resource Groups soient vraiment supprimés
-          echo "⏳ Attente de la suppression complète des ressources (max 5 min)..."
-          RG_LIST=("projet-docker-rg" "projet-docker-rg-swe")
-          
-          for attempt in {1..30}; do
-            ALL_DELETED=true
-            for rg in "${RG_LIST[@]}"; do
-              if $REAL_AZ group show -n "$rg" >/dev/null 2>&1; then
-                ALL_DELETED=false
-                echo "  [${attempt}/30] $rg existe encore..."
-                break
-              fi
-            done
-            
-            if [ "$ALL_DELETED" = true ]; then
-              echo "✅ Toutes les ressources sont supprimées"
-              break
-            fi
-            
-            sleep 10
-          done
-          
           echo "✅ Pre-cleanup terminé"
 
 
       # ========================================
-      # 4. Exécution du script de déploiement
+      # 5. Exécution du script de déploiement
       # ========================================
       # Lance deploy_n8n_azure.sh et capture la sortie dans deploy.log
       # Le script crée : Resource Group, VNet, NSG, VM, et installe n8n
@@ -162,7 +145,7 @@ jobs:
           ./deploy_n8n_azure.sh 2>&1 | tee deploy.log
 
       # ========================================
-      # 5. Extraction des informations de déploiement
+      # 6. Extraction des informations de déploiement
       # ========================================
       # Parse le log pour récupérer :
       #   - RG : Nom du Resource Group
@@ -191,7 +174,7 @@ jobs:
           fi
 
       # ========================================
-      # 6. Vérification de la VM sur Azure
+      # 7. Vérification de la VM sur Azure
       # ========================================
       # Confirme que la VM existe bien dans Azure
 
@@ -201,7 +184,7 @@ jobs:
           echo "✅ VM trouvée: $VM (RG: $RG)"
 
       # ========================================
-      # 7. Test de disponibilité de n8n
+      # 8. Test de disponibilité de n8n
       # ========================================
       # Attend que n8n réponde sur le port 5678 (max 8 minutes)
       # Codes HTTP acceptés :
@@ -242,7 +225,7 @@ jobs:
           fi
 
       # ========================================
-      # 8. Génération du résumé
+      # 9. Génération du résumé
       # ========================================
       # Crée un résumé visible dans l'interface GitHub Actions
       # Affiche le statut (succès/échec) et les infos de la VM
@@ -265,7 +248,7 @@ jobs:
           fi
 
       # ========================================
-      # 9. Nettoyage des ressources Azure
+      # 10. Nettoyage des ressources Azure
       # ========================================
       # TOUJOURS exécuté (succès ou échec)
       # Utilise la fonction --cleanup du script pour supprimer toutes les ressources
