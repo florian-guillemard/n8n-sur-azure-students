@@ -82,19 +82,23 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 
 
 3. **Se connecter à Azure** via l'interface ouverte dans le navigateur pour s'authentifier avec le compte fourni spécifiquement pour ce projet
+<img width="1320" height="1230" alt="image" src="https://github.com/user-attachments/assets/f186ce55-cbf9-41d3-b6ab-117c86ce4b0a" />
+	Retourner dans le terminal et choisissez le compte fourni précédemment, puis cliquez sur "entrée"
+<img width="1239" height="373" alt="Screenshot 2025-10-30 at 11 21 22" src="https://github.com/user-attachments/assets/f1da2da8-52fb-4a41-a2ca-61c561aa99df" />
 
-4. Le script s'occupe de tout le déploiement
 
-5. À la fin, il affiche :
+5. Le script s'occupe de tout le déploiement
+
+6. À la fin, il affiche :
 - L'adresse IP publique de la machine
 - Les accès SSH
 - L'URL n8n (ex: `http://<IP>:5678`)
+<img width="1702" height="1126" alt="image" src="https://github.com/user-attachments/assets/1a19cfbe-b0ab-4d6e-be68-55c8e4f76499" />
 
 ### Nettoyage
 
 Pour supprimer toutes les ressources Azure et les clés SSH associées :
 `./deploy_n8n_azure.sh –cleanup`
-
 
 ---
 
@@ -121,8 +125,30 @@ chmod +x n8n_manager.sh
 
 
 3. **Suivre le menu interactif** :
+[Lors du lancement de ce script, il faut en premier lieu choisir l'OPTION 1 pour configurer le compte administrateur]
 - Option 1 : Créer un utilisateur
+<img width="570" height="430" alt="image" src="https://github.com/user-attachments/assets/48533e7d-213a-41e0-b59c-b8e7b8e34c01" />
+Il vous sera demandé de créer une clée API, pour cela, rendez vous sur l'interface N8N, connectez vous avec les informations configurées précédemment.
+En bas à gauche, cliquez sur le profil > "settings":
+<img width="1482" height="811" alt="Screenshot 2025-10-30 at 11 30 32" src="https://github.com/user-attachments/assets/2968a3d9-387b-41fa-a56e-9f7b3a0b8701" />
+<img width="282" height="114" alt="Screenshot 2025-10-30 at 11 30 37" src="https://github.com/user-attachments/assets/c3f85392-9804-42bc-9bc8-a3d7d69ac603" />
+
+Sur la nouvelle page qui s'ouvre, choisissez "n8n api":
+<img width="198" height="445" alt="Screenshot 2025-10-30 at 11 30 43" src="https://github.com/user-attachments/assets/e3151a9b-50b5-46f9-9740-0065cbfb7443" />
+
+Ensuite, cliquer sur "Create an API Key":
+<img width="1234" height="405" alt="Screenshot 2025-10-30 at 11 30 47" src="https://github.com/user-attachments/assets/49e8963d-0916-4df1-865f-534c709f7bcc" />
+
+Nommer la clé:
+<img width="607" height="498" alt="Screenshot 2025-10-30 at 11 30 52" src="https://github.com/user-attachments/assets/ec0b28ae-7218-427b-a6be-c71f862d563b" />
+
+[Etape Importante] Copier la clé API et coller la dans le terminal, une fois le menu fermé, vous ne pourrez plus récupérer la clé API:
+<img width="604" height="340" alt="Screenshot 2025-10-30 at 11 30 56" src="https://github.com/user-attachments/assets/e918c349-ba3b-42b2-acf9-f5a1886c2dd9" />
+<img width="492" height="74" alt="Screenshot 2025-10-30 at 11 33 16" src="https://github.com/user-attachments/assets/c2700d85-8686-4ac8-b3db-28d25a042b10" />
+
 - Option 2 : Charger un workflow
+Une fois la clé précédemment chargée, vous pouvez importer les workflow:
+<img width="976" height="432" alt="image" src="https://github.com/user-attachments/assets/9735b721-2b59-4a03-9ecb-91c3a2f73062" />
 - Option 3 : Charger une nouvelle clé
 - Option 4 : Quitter
 
@@ -194,7 +220,7 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 
 ⚠️ **Attention aux points suivants :**
 
-- **Ports ouverts (22/443/5678)** → À restreindre en production (firewall, NSG)
+- **Ports ouverts (22/5678)** → À restreindre en production (firewall, NSG)
 - **Pas de HTTPS natif** → Ajouter un reverse proxy + certificats SSL en production
 - **Clé SSH privée** → Protéger votre machine et ne jamais partager la clé privée
 - **Credentials par défaut** → Changer immédiatement le mot de passe `admin123`
