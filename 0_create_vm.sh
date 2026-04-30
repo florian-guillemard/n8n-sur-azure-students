@@ -18,6 +18,9 @@ NIC_NAME="${BASENAME}-nic01"         # Interface réseau (NIC)
 VM_NAME="${BASENAME}-vm01"           # Nom de la VM
 
 FORCE_CLEANUP=0                      # Flag pour forcer le nettoyage sans confirmation
+REGENERATE_SSH_KEY=0                 # Régénère explicitement la clé SSH locale
+SSH_KEY_PATH="${HOME:-${USERPROFILE}}/.ssh/azure_n8n"
+SSH_PUB_KEY_PATH="${SSH_KEY_PATH}.pub"
 
 # ============================================= Fonction de nettoyage =============================================
 cleanup_resources() {
@@ -38,7 +41,7 @@ cleanup_resources() {
   echo "  • Réseau (VNet, Subnet, NSG, NIC)"
   echo "  • IP publique"
   echo "  • Toutes les ressources associées"
-  echo "  • Clé SSH locale générée : ~/.ssh/azure_n8n et ~/.ssh/azure_n8n.pub"
+  echo "  • Clé SSH locale générée : $SSH_KEY_PATH et $SSH_PUB_KEY_PATH"
   echo ""
 
   echo "Ressources actuelles :"
@@ -69,8 +72,8 @@ cleanup_resources() {
   done
   echo "✓ Resource Group supprimé."
 
-  SSH_PRIV_KEY="${HOME:-${USERPROFILE}}/.ssh/azure_n8n"
-  SSH_PUB_KEY="${SSH_PRIV_KEY}.pub"
+  SSH_PRIV_KEY="$SSH_KEY_PATH"
+  SSH_PUB_KEY="$SSH_PUB_KEY_PATH"
 
   if [ -f "$SSH_PRIV_KEY" ] && [ -f "$SSH_PUB_KEY" ]; then
     echo "==> Suppression des clés SSH locales : $SSH_PRIV_KEY et $SSH_PUB_KEY"
@@ -122,6 +125,7 @@ Options:
   --help      Affiche cette aide puis quitte
   --cleanup   Supprime toutes les ressources du déploiement
   --force     Force la suppression sans confirmation (avec --cleanup)
+  --regenerate-ssh-key  Régénère la paire de clés $SSH_KEY_PATH
   --start     Démarre la VM existante
   --stop      Arrête la VM existante
 EOF
@@ -139,6 +143,9 @@ for arg in "$@"; do
       ;;
     --force)
       FORCE_CLEANUP=1
+      ;;
+    --regenerate-ssh-key)
+      REGENERATE_SSH_KEY=1
       ;;
     --cleanup|--start|--stop)
       if [ -n "$REQUESTED_ACTION" ] && [ "$REQUESTED_ACTION" != "$arg" ]; then
@@ -499,17 +506,47 @@ echo ""
 read -r -p "Appuyez sur Entrée pour confirmer et lancer le déploiement (Ctrl+C pour annuler)... " _
 
 generate_ssh_key() {
-  SSH_KEY_PATH="${HOME:-${USERPROFILE}}/.ssh/azure_n8n"
-  if [[ -f "$SSH_KEY_PATH" || -f "${SSH_KEY_PATH}.pub" ]]; then
-    echo "⏳ Clé SSH $SSH_KEY_PATH déjà existante. Suppression des anciennes clés."
-    rm -f "${SSH_KEY_PATH}" "${SSH_KEY_PATH}.pub"
+  SSH_KEY_DIR=$(dirname "$SSH_KEY_PATH")
+  mkdir -p "$SSH_KEY_DIR"
+
+  if [ "$REGENERATE_SSH_KEY" -eq 1 ]; then
+    if [[ -f "$SSH_KEY_PATH" || -f "${SSH_KEY_PATH}.pub" ]]; then
+      echo "⏳ Régénération demandée : suppression des clés existantes."
+      rm -f "${SSH_KEY_PATH}" "${SSH_KEY_PATH}.pub"
+    fi
+    echo "🗝 Génération d'une nouvelle paire de clés SSH : $SSH_KEY_PATH"
+    ssh-keygen -t rsa -b 2048 -f "$SSH_KEY_PATH" -N "" -q
+    echo "✓ Clé SSH régénérée."
+    return
   fi
+
+  if [[ -f "$SSH_KEY_PATH" && -f "${SSH_KEY_PATH}.pub" ]]; then
+    echo "ℹ️ Clé SSH existante détectée : $SSH_KEY_PATH (conservée)"
+    chmod 600 "$SSH_KEY_PATH"
+    chmod 644 "${SSH_KEY_PATH}.pub"
+    return
+  fi
+
+  if [[ -f "$SSH_KEY_PATH" && ! -f "${SSH_KEY_PATH}.pub" ]]; then
+    echo "❌ Clé privée trouvée mais clé publique absente : ${SSH_KEY_PATH}.pub"
+    echo "   Utilisez --regenerate-ssh-key pour recréer une paire cohérente."
+    exit 1
+  fi
+
   echo "🗝 Génération d'une nouvelle paire de clés SSH : $SSH_KEY_PATH"
   ssh-keygen -t rsa -b 2048 -f "$SSH_KEY_PATH" -N "" -q
+  chmod 600 "$SSH_KEY_PATH"
+  chmod 644 "${SSH_KEY_PATH}.pub"
   echo "✓ Clé SSH générée."
 }
 
 generate_ssh_key
+
+if [ ! -f "$SSH_PUB_KEY_PATH" ]; then
+  echo "❌ Clé publique SSH introuvable : $SSH_PUB_KEY_PATH"
+  echo "   Utilisez --regenerate-ssh-key pour générer une paire valide."
+  exit 1
+fi
 
 echo "==> Vérification du groupe de ressources : $RG_NAME"
 
@@ -698,7 +735,7 @@ if ! az vm create \
   --image "Canonical:ubuntu-24_04-lts:server:latest" \
   --size "$VM_SIZE" \
   --admin-username "$ADMIN_USER" \
-  --ssh-key-values "${HOME:-${USERPROFILE}}/.ssh/azure_n8n.pub" \
+  --ssh-key-values "$SSH_PUB_KEY_PATH" \
   --storage-sku "$DISK_SKU" \
   --custom-data "$CLOUD_INIT_FILE" \
   -o none; then
@@ -752,9 +789,9 @@ echo "    $0 --start"
 echo ""
 echo "🔗 Accès :"
 echo "  n8n Interface : http://$PUBLIC_IP:5678"
-echo "  SSH (port 22) : ssh -i ~/.ssh/azure_n8n $ADMIN_USER@$PUBLIC_IP"
+echo "  SSH (port 22) : ssh -i $SSH_KEY_PATH $ADMIN_USER@$PUBLIC_IP"
 echo ""
-echo "  Suivi des logs : ssh -i ~/.ssh/azure_n8n $ADMIN_USER@$PUBLIC_IP 'sudo tail -f /var/log/cloud-init-output.log'"
+echo "  Suivi des logs : ssh -i $SSH_KEY_PATH $ADMIN_USER@$PUBLIC_IP 'sudo tail -f /var/log/cloud-init-output.log'"
 echo ""
 echo "🔒 Sécurité :"
 echo "  ⚠ NSG ouvert à tous (*) - À restreindre en production !"
