@@ -5,7 +5,8 @@ set -euo pipefail
 # Définition des variables de configuration du déploiement
 BASENAME="projet-docker"             # Base name pour tous les ressources
 ADMIN_USER="devopsadmin"             # Nom d'utilisateur administrateur pour le VM
-VM_SIZE="Standard_D2s_v3"               # Taille de la machine virtuelle
+VM_SIZE=""                           # Taille de la VM (sélectionnée interactivement selon la région)
+DISK_SKU=""                          # SKU disque (sélectionné interactivement)
 
 # Noms des ressources Azure
 RG_NAME="${BASENAME}-rg"             # Resource Group
@@ -253,50 +254,208 @@ if [ ${#POLICY_REGIONS[@]} -eq 0 ]; then
   exit 1
 fi
 
+# ============================================= Sélection interactive de la région =============================================
 echo "Régions autorisées par Azure :"
 for i in "${!POLICY_REGIONS[@]}"; do
-  printf "  [%d] %s\n" "$((i + 1))" "${POLICY_REGIONS[$i]}"
+  region_clean="${POLICY_REGIONS[$i]}"
+  [ "$os" = "Windows" ] && region_clean=$(echo "$region_clean" | tr -d '\r')
+  printf "  [%2d] %s\n" "$((i+1))" "$region_clean"
+done
+echo ""
+
+while true; do
+  read -r -p "Choisissez une région (1-${#POLICY_REGIONS[@]}) [défaut: 1] : " region_choice
+  region_choice=${region_choice:-1}
+  if [[ "$region_choice" =~ ^[0-9]+$ ]] && [ "$region_choice" -ge 1 ] && [ "$region_choice" -le "${#POLICY_REGIONS[@]}" ]; then
+    LOCATION="${POLICY_REGIONS[$((region_choice-1))]}"
+    [ "$os" = "Windows" ] && LOCATION=$(echo "$LOCATION" | tr -d '\r')
+    break
+  fi
+  echo "❌ Choix invalide. Saisissez un nombre entre 1 et ${#POLICY_REGIONS[@]}."
+done
+
+echo "✓ Région sélectionnée : $LOCATION"
+echo ""
+
+# ============================================= Sélection interactive de la taille VM =============================================
+echo "==> Récupération des tailles VM réellement déployables pour VOTRE abonnement dans '$LOCATION'..."
+echo "    (peut prendre 20-60 secondes — interroge list-skus + list-usage + list-sizes)"
+
+# 1) Toutes les entrées de quota : famille -> (currentValue, limit)
+#    On extrait en TSV puis on filtre en awk car Azure renvoie parfois `limit`
+#    en string, ce qui fait crasher la comparaison JMESPath `limit > \`0\``.
+USAGE_RAW=$(az vm list-usage \
+  --location "$LOCATION" \
+  --query "[].[name.value, currentValue, limit]" \
+  --output tsv 2>/dev/null | tr -d '\r' || true)
+
+if [ -z "$USAGE_RAW" ]; then
+  echo "❌ Impossible de récupérer les quotas pour '$LOCATION'."
+  exit 1
+fi
+
+# Quota régional total (Total Regional vCPUs) restant
+TOTAL_CORES_REMAINING=$(echo "$USAGE_RAW" | awk -F'\t' 'tolower($1)=="cores" {print ($3+0)-($2+0); exit}')
+TOTAL_CORES_REMAINING=${TOTAL_CORES_REMAINING:-0}
+
+if [ "$TOTAL_CORES_REMAINING" -le 0 ]; then
+  echo "❌ Quota régional total épuisé dans '$LOCATION' (Total Regional vCPUs = 0 restant)."
+  echo "   Demandez une augmentation de quota ou changez de région."
+  exit 1
+fi
+
+# 2) SKU déployables (sans restriction de type 'Location' / NotAvailableForSubscription).
+#    On garde celles qui ont uniquement des restrictions 'Zone' : elles sont bloquées
+#    pour des déploiements zonaux mais déployables sans --zone (ce que fait ce script).
+SKU_FAMILY_RAW=$(az vm list-skus \
+  --location "$LOCATION" \
+  --resource-type virtualMachines \
+  --query "[?length(restrictions[?type=='Location' && reasonCode=='NotAvailableForSubscription']) == \`0\`].[name, family]" \
+  --output tsv 2>/dev/null | tr -d '\r' || true)
+
+if [ -z "$SKU_FAMILY_RAW" ]; then
+  echo "❌ Aucune taille VM sans restriction dans '$LOCATION'."
+  exit 1
+fi
+
+# 3) Caractéristiques (vCPU/RAM) — filtre dimensionnel raisonnable
+SIZES_RAW=$(az vm list-sizes \
+  --location "$LOCATION" \
+  --query "[?numberOfCores>=\`2\` && numberOfCores<=\`8\` && memoryInMB>=\`4096\` && memoryInMB<=\`32768\`].[name, numberOfCores, memoryInMB]" \
+  --output tsv 2>/dev/null | tr -d '\r' || true)
+
+if [ -z "$SIZES_RAW" ]; then
+  echo "❌ Impossible de récupérer les caractéristiques des tailles VM."
+  exit 1
+fi
+
+# 4) Pour chaque taille : vérifier absence de restriction + cores ≤ quota famille
+#    + cores ≤ quota régional. C'est la condition pour que `az vm create` réussisse.
+SIZES_AVAILABLE=""
+while IFS=$'\t' read -r name cores memmb; do
+  [ -z "$name" ] && continue
+
+  # Quota régional total
+  if [ "$cores" -gt "$TOTAL_CORES_REMAINING" ]; then continue; fi
+
+  # Famille du SKU (et donc absence de restriction si trouvée)
+  family=$(echo "$SKU_FAMILY_RAW" | awk -F'\t' -v n="$name" '$1==n {print tolower($2); exit}')
+  [ -z "$family" ] && continue
+
+  # Quota restant pour la famille
+  fam_remaining=$(echo "$USAGE_RAW" | awk -F'\t' -v f="$family" 'tolower($1)==f {print ($3+0)-($2+0); exit}')
+  fam_remaining=${fam_remaining:-0}
+  if [ "$cores" -gt "$fam_remaining" ]; then continue; fi
+
+  SIZES_AVAILABLE+="${name}	${cores}	${memmb}	${fam_remaining}"$'\n'
+done <<< "$SIZES_RAW"
+
+if [ -z "$SIZES_AVAILABLE" ]; then
+  echo "❌ Aucune taille (2-8 vCPU, 4-32 GB) déployable dans '$LOCATION'."
+  echo "   Toutes les familles ont un quota restant insuffisant pour les cores requis."
+  echo "   Essayez une autre région."
+  exit 1
+fi
+
+# 4) Filtre familles courantes B/D/E/F (sinon fallback sur tout)
+SIZES_FILTERED=$(echo "$SIZES_AVAILABLE" | grep -E '^Standard_(B[0-9]|D[0-9]|E[0-9]|F[0-9])' | sort || true)
+
+if [ -z "$SIZES_FILTERED" ]; then
+  echo "⚠️  Aucune taille des familles B/D/E/F autorisée. Affichage de toutes les tailles autorisées."
+  SIZES_FILTERED=$(echo "$SIZES_AVAILABLE" | sort)
+fi
+
+SIZES=()
+while IFS=$'\t' read -r name cores memmb fam_rem; do
+  [ -n "$name" ] && SIZES+=("${name}|${cores}|${memmb}|${fam_rem}")
+done <<< "$SIZES_FILTERED"
+
+if [ ${#SIZES[@]} -eq 0 ]; then
+  echo "❌ Aucune taille VM compatible trouvée."
+  exit 1
+fi
+
+echo ""
+echo "Tailles VM déployables dans '$LOCATION' (quota régional restant : $TOTAL_CORES_REMAINING cores)"
+echo "(filtre : familles B/D/E/F, 2-8 vCPU, 4-32 GB RAM, quota famille suffisant)"
+printf "  %-4s %-30s %-8s %-10s %-18s\n" "#" "Nom" "vCPU" "RAM (GB)" "Quota famille"
+echo "  -----------------------------------------------------------------------"
+for i in "${!SIZES[@]}"; do
+  IFS='|' read -r s_name s_cores s_memmb s_fam <<< "${SIZES[$i]}"
+  s_mem_gb=$((s_memmb / 1024))
+  printf "  [%2d] %-30s %-8s %-10s %-18s\n" "$((i+1))" "$s_name" "$s_cores" "$s_mem_gb" "${s_fam} cores"
 done
 
 echo ""
 while true; do
-  read -r -p "Choisissez le numéro de région (1-${#POLICY_REGIONS[@]}) : " REGION_CHOICE
-
-  if ! [[ "$REGION_CHOICE" =~ ^[0-9]+$ ]]; then
-    echo "❌ Saisie invalide : entrez un nombre."
-    continue
-  fi
-
-  if [ "$REGION_CHOICE" -lt 1 ] || [ "$REGION_CHOICE" -gt "${#POLICY_REGIONS[@]}" ]; then
-    echo "❌ Numéro hors plage."
-    continue
-  fi
-
-  REGION_INDEX=$((REGION_CHOICE - 1))
-  if [ "$os" = "Windows" ]; then
-    LOCATION=$(echo "${POLICY_REGIONS[$REGION_INDEX]}" | tr -d '\r')
+  read -r -p "Choisissez une taille (1-${#SIZES[@]}) ou tapez un nom 'Standard_*' [défaut: 1] : " size_choice
+  size_choice=${size_choice:-1}
+  if [[ "$size_choice" =~ ^[0-9]+$ ]] && [ "$size_choice" -ge 1 ] && [ "$size_choice" -le "${#SIZES[@]}" ]; then
+    IFS='|' read -r VM_SIZE _ _ _ <<< "${SIZES[$((size_choice-1))]}"
+    break
+  elif [[ "$size_choice" =~ ^Standard_ ]]; then
+    custom_cores=$(az vm list-sizes --location "$LOCATION" --query "[?name=='$size_choice'].numberOfCores" -o tsv 2>/dev/null | tr -d '\r')
+    if [ -z "$custom_cores" ]; then
+      echo "❌ Taille '$size_choice' inexistante dans '$LOCATION'."
+      continue
+    fi
+    custom_family=$(echo "$SKU_FAMILY_RAW" | awk -F'\t' -v n="$size_choice" '$1==n {print tolower($2); exit}')
+    if [ -z "$custom_family" ]; then
+      echo "❌ Taille '$size_choice' restreinte (NotAvailableForSubscription)."
+      continue
+    fi
+    custom_remaining=$(echo "$USAGE_RAW" | awk -F'\t' -v f="$custom_family" 'tolower($1)==f {print ($3+0)-($2+0); exit}')
+    custom_remaining=${custom_remaining:-0}
+    if [ "$custom_cores" -gt "$custom_remaining" ]; then
+      echo "❌ Quota famille insuffisant : $size_choice requiert $custom_cores cores, restant: $custom_remaining."
+      continue
+    fi
+    if [ "$custom_cores" -gt "$TOTAL_CORES_REMAINING" ]; then
+      echo "❌ Quota régional insuffisant : $size_choice requiert $custom_cores cores, restant: $TOTAL_CORES_REMAINING."
+      continue
+    fi
+    VM_SIZE="$size_choice"
+    break
   else
-    LOCATION="${POLICY_REGIONS[$REGION_INDEX]}"
+    echo "❌ Choix invalide."
   fi
-  break
 done
 
+echo "✓ Taille VM sélectionnée : $VM_SIZE"
 echo ""
-echo "Région sélectionnée : $LOCATION"
 
-DISK_SKU="Standard_LRS"
+# ============================================= Sélection du SKU disque =============================================
+echo "Type de disque (SKU) :"
+echo "  [1] Standard_LRS     (HDD, économique)"
+echo "  [2] StandardSSD_LRS  (SSD standard, équilibré)"
+echo "  [3] Premium_LRS      (SSD haute performance, requiert taille avec suffixe 's')"
+read -r -p "Choisissez le SKU de disque (1-3) [défaut: 1] : " disk_choice
+disk_choice=${disk_choice:-1}
+case "$disk_choice" in
+  2) DISK_SKU="StandardSSD_LRS" ;;
+  3) DISK_SKU="Premium_LRS" ;;
+  *) DISK_SKU="Standard_LRS" ;;
+esac
 
+if [ "$DISK_SKU" = "Premium_LRS" ] && [[ "$VM_SIZE" != *s* ]]; then
+  echo "⚠️  La taille '$VM_SIZE' ne supporte pas Premium_LRS (pas de suffixe 's')."
+  echo "    Bascule automatique sur StandardSSD_LRS."
+  DISK_SKU="StandardSSD_LRS"
+fi
+
+echo "✓ SKU de disque sélectionné : $DISK_SKU"
 echo ""
+
 echo "=========================================="
 echo "Configuration de déploiement :"
 echo "  Région      : $LOCATION"
+echo "  Taille VM   : $VM_SIZE"
 echo "  Stockage    : $DISK_SKU"
 echo "  Abonnement  : $(az account show --query name -o tsv)"
 echo "  Subscription: $SUBSCRIPTION_ID"
 echo "=========================================="
 echo ""
-echo "⏱ Pause 5 secondes avant déploiement..."
-sleep 5
+read -r -p "Appuyez sur Entrée pour confirmer et lancer le déploiement (Ctrl+C pour annuler)... " _
 
 generate_ssh_key() {
   SSH_KEY_PATH="${HOME:-${USERPROFILE}}/.ssh/azure_n8n"
@@ -386,6 +545,11 @@ runcmd:
 CLOUDEOF
 )
 
+# Écriture du cloud-init dans un fichier temporaire (compatible macOS et Windows/Git Bash)
+CLOUD_INIT_FILE=$(mktemp 2>/dev/null || echo "${TMP:-${TEMP:-/tmp}}/cloud-init-$$.yaml")
+echo "$CLOUD_INIT_YAML" > "$CLOUD_INIT_FILE"
+trap 'rm -f "$CLOUD_INIT_FILE"' EXIT
+
 echo ""
 echo "==> Création VNet/Subnet"
 if ! az network vnet create \
@@ -407,6 +571,22 @@ if ! az network nsg create \
   --location "$LOCATION" \
   -o none; then
   echo "Erreur lors de la création du NSG"
+  exit 1
+fi
+
+# Attente de la propagation ARM : le NSG peut renvoyer "created" mais ne pas être
+# immédiatement visible pour les commandes suivantes (eventual consistency)
+echo "  ⏳ Attente de la propagation du NSG..."
+NSG_READY=0
+for i in $(seq 1 30); do
+  if az network nsg show --resource-group "$RG_NAME" --name "$NSG_NAME" --output none 2>/dev/null; then
+    NSG_READY=1
+    break
+  fi
+  sleep 2
+done
+if [ "$NSG_READY" -eq 0 ]; then
+  echo "❌ NSG '$NSG_NAME' introuvable après 60 secondes."
   exit 1
 fi
 
@@ -473,7 +653,7 @@ case "$os" in
       --admin-username "$ADMIN_USER" \
       --ssh-key-values "${HOME:-${USERPROFILE}}/.ssh/azure_n8n.pub" \
       --storage-sku "$DISK_SKU" \
-      --custom-data <(echo "$CLOUD_INIT_YAML") \
+      --custom-data "$CLOUD_INIT_FILE" \
       -o none; then
       echo "Erreur lors de la création de la VM sur macOS"
       exit 1
@@ -482,7 +662,7 @@ case "$os" in
   Windows)
     echo ""
     echo "==> Création VM : $VM_NAME (Debian 11 Gen2)"
-    az vm create \
+    if ! az vm create \
       --resource-group "$RG_NAME" \
       --name "$VM_NAME" \
       --location "$LOCATION" \
@@ -490,10 +670,13 @@ case "$os" in
       --image "Canonical:ubuntu-24_04-lts:server:latest" \
       --size "$VM_SIZE" \
       --admin-username "$ADMIN_USER" \
-      --ssh-key-values "${HOME:-${USERPROFILE}}/.ssh/n8n_azure.pub" \
+      --ssh-key-values "${HOME:-${USERPROFILE}}/.ssh/azure_n8n.pub" \
       --storage-sku "$DISK_SKU" \
       --custom-data "$CLOUD_INIT_FILE" \
-      -o none
+      -o none; then
+      echo "Erreur lors de la création de la VM sur Windows"
+      exit 1
+    fi
     ;;
   *)
     echo "OS non supporté pour la création automatique de VM."
