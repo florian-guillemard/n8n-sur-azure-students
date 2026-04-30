@@ -1,12 +1,12 @@
 # README — Automatisation complète du déploiement et configuration de n8n sur Azure
 
-Ce projet contient 2 scripts Bash distincts, complémentaires, accompagnant un déploiement automatisé d'un serveur n8n sur une machine virtuelle Azure, suivi d'une configuration simple via l'interface n8n.
+Ce projet contient désormais 3 scripts Bash distincts et complémentaires : création de la VM Azure, déploiement de n8n sur la VM, puis configuration de n8n via API.
 
 ## Création d’un compte Azure for Students
 
 Pour bénéficier des crédits gratuits et des services Azure spécifiques aux étudiants, suivez ces étapes pour créer votre compte Azure for Students :
 	
-	1.	Rendez-vous sur la page officielle Azure for Students : "https://azure.microsoft.com/fr-fr/free/students"  
+	1.	Rendez-vous sur la page officielle Azure for Students :"https://azure.microsoft.com/fr-fr/free/students"  
 	
 <img width="1512" height="759" alt="Screenshot 2025-10-30 at 10 37 43" src="https://github.com/user-attachments/assets/41892580-2328-4791-a16e-e62e8323ccae" />
 
@@ -23,7 +23,7 @@ Pour bénéficier des crédits gratuits et des services Azure spécifiques aux �
 <img width="557" height="779" alt="Screenshot 2025-10-30 at 10 43 40" src="https://github.com/user-attachments/assets/90697c63-ff7e-4c75-981a-e0b92ae8ea6b" />
 
 	3.	Complétez le formulaire de vérification d’identité étudiante, validez votre statut en utilisant votre adresse
-	mail fourni pour ce projet. 
+	mail fourni pour ce projet.
 	
 <img width="766" height="751" alt="Screenshot 2025-10-30 at 10 42 40" src="https://github.com/user-attachments/assets/75144e1e-93e9-4578-b044-253a793c0b20" />
 
@@ -51,12 +51,13 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 
 | Script | Description |
 |--------|-------------|
-| `deploy_n8n_azure.sh` | Déploie VM Azure Debian, installe Docker & n8n, ouvre les ports 
-| `n8n_manager.sh` | Configure l'utilisateur n8n, gère clé API et workflows | 
+| `0_create_vm.sh` | Crée l’infrastructure Azure (RG, réseau, NSG, IP, VM), gère `--start`, `--stop`, `--cleanup` |
+| `1_deploy_n8n_azure.sh` | Déploie n8n sur la VM Azure |
+| `2_config_n8n.sh` | Configure n8n (owner, clé API, import de workflows) |
 
 ---
 
-## Script 1 – Déploiement Azure automatisé (`deploy_n8n_azure.sh`)
+## Script 1 – Création de la VM Azure (`0_create_vm.sh`)
 
 ### Fonctionnalités principales
 
@@ -75,10 +76,10 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 ### Comment utiliser
 
 1. **Rendre le script exécutable :**
-   `chmod +x deploy_n8n_azure.sh`
+   `chmod +x 0_create_vm.sh`
 
 2. **Lancer le script :**
-`./deploy_n8n_azure.sh`
+`./0_create_vm.sh`
 
 
 3. **Se connecter à Azure** via l'interface ouverte dans le navigateur pour s'authentifier avec le compte fourni spécifiquement pour ce projet
@@ -99,7 +100,7 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 ### Arrêt et reprise de l'activité de la Virtual Machine
 [Attention cette option ne supprime pas la machine virtuelle, elle continue à être facturée]
 
-Pour stopper la VM temporairement, vous pouvez relance le script avec l'option `--stop`:
+Pour stopper la VM temporairement, vous pouvez relancer le script avec l'option `--stop` :
 
 <img width="1104" height="242" alt="image" src="https://github.com/user-attachments/assets/aa1811fa-19e6-4476-b6ad-e6e6ccfaab06" />
 
@@ -111,13 +112,29 @@ Pour relancer la VM après un arrêt, il faut utiliser l'option `--start`:
 ### Nettoyage
 
 Pour supprimer toutes les ressources Azure et les clés SSH associées :
-`./deploy_n8n_azure.sh –-cleanup`
+`./0_create_vm.sh --cleanup`
 
 <img width="737" height="413" alt="Screenshot 2025-10-30 at 11 53 09" src="https://github.com/user-attachments/assets/79372ba7-7f39-4b24-ad18-dbb8dc50bd66" />
 
 ---
 
-## Script 2 – Gestion simple de n8n (`n8n_manager.sh`)
+## Script 2 – Déploiement n8n sur Azure (`1_deploy_n8n_azure.sh`)
+
+### Objectif
+
+Déployer n8n sur la VM Azure créée par le script `0_create_vm.sh`.
+
+### Utilisation
+
+1. **Rendre le script exécutable :**
+`chmod +x 1_deploy_n8n_azure.sh`
+
+2. **Lancer le script :**
+`./1_deploy_n8n_azure.sh`
+
+---
+
+## Script 3 – Gestion simple de n8n (`2_config_n8n.sh`)
 
 ### Objectif
 
@@ -133,10 +150,10 @@ Après que la VM et n8n soient déployés, ce script sert à configurer propreme
 ### Utilisation
 
 1. **Rendre le script exécutable :**
-chmod +x n8n_manager.sh
+chmod +x 2_config_n8n.sh
 
 2. **Lancer le script :**
-`./n8n_manager.sh`
+`./2_config_n8n.sh`
 
 
 3. **Suivre le menu interactif** :
@@ -183,15 +200,22 @@ Une fois la clé précédemment chargée, vous pouvez importer les workflow:
 
 ### Étape 1 : Déploiement
 
-Lancer le script de déploiement Azure :
-`./deploy_n8n_azure.sh`
+Lancer le script de création de l’infrastructure Azure :
+`./0_create_vm.sh`
 
-Ce script crée la VM et installe n8n.
+Ce script crée la VM, le réseau et les ressources Azure nécessaires.
 
-### Étape 2 : Configuration
+### Étape 2 : Déploiement de n8n
 
-Une fois le service n8n accessible, lancer le deuxième script :
-`./n8n_manager.sh`
+Lancer le script de déploiement n8n :
+`./1_deploy_n8n_azure.sh`
+
+Ce script installe et démarre n8n sur la VM.
+
+### Étape 3 : Configuration
+
+Une fois le service n8n accessible, lancer le script de configuration :
+`./2_config_n8n.sh`
 
 
 Ce script crée un utilisateur administrateur n8n sécurisé et gère les workflows.
@@ -202,10 +226,13 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 
 ```sh
 /
-├── deploy_n8n_azure.sh        # Script 1 : déploie VM Azure et n8n (administrateur)
-├── n8n_manager.sh             # Script 2 : configure n8n post-déploiement (étudiants) ├── workflow/                  # Dossier contenant les workflows JSON à importer │
-	├── workflow1.json │
-	├── workflow2.json │
+├── 0_create_vm.sh             # Script 1 : crée l’infrastructure Azure (VM, réseau, sécurité)
+├── 1_deploy_n8n_azure.sh      # Script 2 : déploie n8n sur la VM
+├── 2_config_n8n.sh            # Script 3 : configure n8n (owner, clé API, workflows)
+├── workflow/                  # Dossier contenant les workflows JSON à importer
+│
+	├── workflow1.json│
+	├── workflow2.json│
 	└── …
 └── ~/.ssh/azure_n8n          # Clés SSH générées par le script 1
 ```
@@ -215,13 +242,18 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 
 ## Prérequis
 
-### Script 1 (deploy_n8n_azure.sh)
+### Script 1 (`0_create_vm.sh`)
 
 - Compte Azure (Azure for Students ou autre)
 - Bash (Linux/macOS/WSL)
 - Connexion internet
 
-### Script 2 (n8n_manager.sh)
+### Script 2 (`1_deploy_n8n_azure.sh`)
+
+- Bash
+- `curl` (installé par défaut)
+
+### Script 3 (`2_config_n8n.sh`)
 
 - Bash
 - `curl` (installé par défaut)
@@ -232,12 +264,16 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 
 | Commande | Description |
 |----------|-------------|
-| `chmod +x deploy_n8n_azure.sh` | Rendre le script de déploiement exécutable |
-| `./deploy_n8n_azure.sh` | Lancer la création de la VM Azure + n8n |
-| `./deploy_n8n_azure.sh --cleanup` | Supprimer toutes les ressources Azure |
-| `./deploy_n8n_azure.sh --cleanup --force` | Supprimer sans confirmation |
-| `chmod +x n8n_manager.sh` | Rendre le gestionnaire n8n exécutable |
-| `./n8n_manager.sh` | Configurer n8n (utilisateurs, workflows) |
+| `chmod +x 0_create_vm.sh` | Rendre le script de création VM exécutable |
+| `./0_create_vm.sh` | Créer l’infrastructure Azure |
+| `./0_create_vm.sh --stop` | Arrêter la VM |
+| `./0_create_vm.sh --start` | Redémarrer la VM |
+| `./0_create_vm.sh --cleanup` | Supprimer toutes les ressources Azure |
+| `./0_create_vm.sh --cleanup --force` | Supprimer sans confirmation |
+| `chmod +x 1_deploy_n8n_azure.sh` | Rendre le script de déploiement n8n exécutable |
+| `./1_deploy_n8n_azure.sh` | Déployer n8n sur la VM |
+| `chmod +x 2_config_n8n.sh` | Rendre le script de configuration n8n exécutable |
+| `./2_config_n8n.sh` | Configurer n8n (utilisateur, clé API, workflows) |
 
 ---
 
