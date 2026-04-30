@@ -254,16 +254,35 @@ if [ ${#POLICY_REGIONS[@]} -eq 0 ]; then
 fi
 
 echo "Régions autorisées par Azure :"
-printf '  ✓ %s\n' "${POLICY_REGIONS[@]}"
-
-if [ "$os" = "Windows" ]; then
-  LOCATION=$(echo "${POLICY_REGIONS[1]}" | tr -d '\r')
-else
-  LOCATION="${POLICY_REGIONS[1]}"
-fi
+for i in "${!POLICY_REGIONS[@]}"; do
+  printf "  [%d] %s\n" "$((i + 1))" "${POLICY_REGIONS[$i]}"
+done
 
 echo ""
-echo "Région sélectionnée automatiquement : $LOCATION"
+while true; do
+  read -r -p "Choisissez le numéro de région (1-${#POLICY_REGIONS[@]}) : " REGION_CHOICE
+
+  if ! [[ "$REGION_CHOICE" =~ ^[0-9]+$ ]]; then
+    echo "❌ Saisie invalide : entrez un nombre."
+    continue
+  fi
+
+  if [ "$REGION_CHOICE" -lt 1 ] || [ "$REGION_CHOICE" -gt "${#POLICY_REGIONS[@]}" ]; then
+    echo "❌ Numéro hors plage."
+    continue
+  fi
+
+  REGION_INDEX=$((REGION_CHOICE - 1))
+  if [ "$os" = "Windows" ]; then
+    LOCATION=$(echo "${POLICY_REGIONS[$REGION_INDEX]}" | tr -d '\r')
+  else
+    LOCATION="${POLICY_REGIONS[$REGION_INDEX]}"
+  fi
+  break
+done
+
+echo ""
+echo "Région sélectionnée : $LOCATION"
 
 DISK_SKU="Standard_LRS"
 
@@ -443,7 +462,7 @@ fi
 case "$os" in
   macOS)
     echo ""
-    echo "==> Création VM : $VM_NAME (Debian 11 Gen2)"
+    echo "==> Création VM : $VM_NAME"
     if ! az vm create \
       --resource-group "$RG_NAME" \
       --name "$VM_NAME" \
