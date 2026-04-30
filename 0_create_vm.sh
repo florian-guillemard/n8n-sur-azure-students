@@ -533,7 +533,7 @@ write_files:
 
       docker run -d --name n8n -p 5678:5678 \
         -e N8N_SECURE_COOKIE=false \
-        -v n8n_/home/node/.n8n \
+        -v n8n:/home/node/.n8n \
         --restart unless-stopped \
         n8nio/n8n
 
@@ -640,49 +640,30 @@ if ! az network nic create \
 fi
 
 case "$os" in
-  macOS)
-    echo ""
-    echo "==> Création VM : $VM_NAME"
-    if ! az vm create \
-      --resource-group "$RG_NAME" \
-      --name "$VM_NAME" \
-      --location "$LOCATION" \
-      --nics "$NIC_NAME" \
-      --image "Canonical:ubuntu-24_04-lts:server:latest" \
-      --size "$VM_SIZE" \
-      --admin-username "$ADMIN_USER" \
-      --ssh-key-values "${HOME:-${USERPROFILE}}/.ssh/azure_n8n.pub" \
-      --storage-sku "$DISK_SKU" \
-      --custom-data "$CLOUD_INIT_FILE" \
-      -o none; then
-      echo "Erreur lors de la création de la VM sur macOS"
-      exit 1
-    fi
-    ;;
-  Windows)
-    echo ""
-    echo "==> Création VM : $VM_NAME (Debian 11 Gen2)"
-    if ! az vm create \
-      --resource-group "$RG_NAME" \
-      --name "$VM_NAME" \
-      --location "$LOCATION" \
-      --nics "$NIC_NAME" \
-      --image "Canonical:ubuntu-24_04-lts:server:latest" \
-      --size "$VM_SIZE" \
-      --admin-username "$ADMIN_USER" \
-      --ssh-key-values "${HOME:-${USERPROFILE}}/.ssh/azure_n8n.pub" \
-      --storage-sku "$DISK_SKU" \
-      --custom-data "$CLOUD_INIT_FILE" \
-      -o none; then
-      echo "Erreur lors de la création de la VM sur Windows"
-      exit 1
-    fi
-    ;;
+  macOS|Windows) ;;
   *)
     echo "OS non supporté pour la création automatique de VM."
     exit 1
     ;;
 esac
+
+echo ""
+echo "==> Création VM : $VM_NAME"
+if ! az vm create \
+  --resource-group "$RG_NAME" \
+  --name "$VM_NAME" \
+  --location "$LOCATION" \
+  --nics "$NIC_NAME" \
+  --image "Canonical:ubuntu-24_04-lts:server:latest" \
+  --size "$VM_SIZE" \
+  --admin-username "$ADMIN_USER" \
+  --ssh-key-values "${HOME:-${USERPROFILE}}/.ssh/azure_n8n.pub" \
+  --storage-sku "$DISK_SKU" \
+  --custom-data "$CLOUD_INIT_FILE" \
+  -o none; then
+  echo "Erreur lors de la création de la VM sur $os"
+  exit 1
+fi
 
 PUBLIC_IP=$(az network public-ip show \
   --resource-group "$RG_NAME" \
