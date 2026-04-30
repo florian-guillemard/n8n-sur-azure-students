@@ -113,25 +113,66 @@ start_vm() {
   exit 0
 }
 
+# ============================================= Aide =============================================
+show_help() {
+  cat <<EOF
+Usage: $0 [OPTIONS]
+
+Options:
+  --help      Affiche cette aide puis quitte
+  --cleanup   Supprime toutes les ressources du déploiement
+  --force     Force la suppression sans confirmation (avec --cleanup)
+  --start     Démarre la VM existante
+  --stop      Arrête la VM existante
+EOF
+}
+
 # ============================================= Argument parsing =============================================
+SHOW_HELP=0
+REQUESTED_ACTION=""
+
+# Passe 1 : enregistrement des options
 for arg in "$@"; do
-  case $arg in
-    --cleanup)
-      cleanup_resources
+  case "$arg" in
+    --help)
+      SHOW_HELP=1
       ;;
     --force)
       FORCE_CLEANUP=1
       ;;
-    --stop)
-      stop_vm
-      ;;
-    --start)
-      start_vm
+    --cleanup|--start|--stop)
+      if [ -n "$REQUESTED_ACTION" ] && [ "$REQUESTED_ACTION" != "$arg" ]; then
+        echo "❌ Options incompatibles : '$REQUESTED_ACTION' et '$arg'."
+        echo "Utilisez une seule action à la fois."
+        exit 1
+      fi
+      REQUESTED_ACTION="$arg"
       ;;
     *)
+      echo "❌ Option inconnue : $arg"
+      echo "Utilisez --help pour voir les options disponibles."
+      exit 1
       ;;
   esac
 done
+
+# Passe 2 : exécution des options
+if [ "$SHOW_HELP" -eq 1 ]; then
+  show_help
+  exit 0
+fi
+
+case "$REQUESTED_ACTION" in
+  --cleanup)
+    cleanup_resources
+    ;;
+  --start)
+    start_vm
+    ;;
+  --stop)
+    stop_vm
+    ;;
+esac
 
 # ============================================= Détection OS =============================================
 detect_os() {
