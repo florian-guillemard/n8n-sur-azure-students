@@ -275,7 +275,7 @@ install_azure_cli
 echo "==> Mise à jour Azure CLI..."
 az upgrade --yes 2>/dev/null || true
 
-az login --allow-no-subscriptions # --use-device-code
+az login --allow-no-subscriptions --use-device-code
 
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 if [ -z "$SUBSCRIPTION_ID" ]; then
