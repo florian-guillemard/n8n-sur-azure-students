@@ -275,13 +275,43 @@ install_azure_cli
 echo "==> Mise à jour Azure CLI..."
 az upgrade --yes 2>/dev/null || true
 
-az login --allow-no-subscriptions
+az login --allow-no-subscriptions # --use-device-code
 
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 if [ -z "$SUBSCRIPTION_ID" ]; then
   echo "ERREUR : Impossible de récupérer l'ID de subscription Azure."
   exit 1
 fi
+
+# Un abonnement neuf (typiquement Azure for Students) n'a pas encore activé
+# Compute, Network et Storage. Sans ça, `az vm list-usage` renvoie une liste
+# vide pour toutes les régions, et la création de VM échoue ensuite.
+ensure_resource_providers() {
+  local namespaces=("Microsoft.Compute" "Microsoft.Network" "Microsoft.Storage")
+  local ns state
+
+  echo ""
+  echo "==> Vérification des fournisseurs de ressources Azure..."
+
+  for ns in "${namespaces[@]}"; do
+    state=$(az provider show --namespace "$ns" --query registrationState -o tsv 2>/dev/null | tr -d '\r' || true)
+    if [ "$state" = "Registered" ]; then
+      echo "✓ $ns déjà enregistré"
+      continue
+    fi
+
+    echo "==> Enregistrement de $ns (état actuel : ${state:-inconnu})..."
+    echo "    Sur un abonnement neuf, cela peut prendre plusieurs minutes."
+    if ! az provider register --namespace "$ns" --wait; then
+      echo "❌ Impossible d'enregistrer $ns."
+      echo "   Sans ce fournisseur, Azure refuse les quotas et la création de la VM."
+      exit 1
+    fi
+    echo "✓ $ns enregistré"
+  done
+}
+
+ensure_resource_providers
 
 echo ""
 echo "==> Vérification des régions autorisées..."
@@ -717,13 +747,14 @@ if ! az network nic create \
   exit 1
 fi
 
-case "$os" in
-  macOS|Windows) ;;
-  *)
-    echo "OS non supporté pour la création automatique de VM."
-    exit 1
-    ;;
-esac
+# Si la CLI est installé, y a pas de raison de vérifier l'OS
+# case "$os" in
+#   macOS|Windows) ;;
+#   *)
+#     echo "OS non supporté pour la création automatique de VM."
+#     exit 1
+#     ;;
+# esac
 
 echo ""
 echo "==> Création VM : $VM_NAME"
