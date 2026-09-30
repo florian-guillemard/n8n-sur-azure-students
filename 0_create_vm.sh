@@ -5,8 +5,8 @@ set -euo pipefail
 # Définition des variables de configuration du déploiement
 BASENAME="projet-docker"             # Base name pour tous les ressources
 ADMIN_USER="devopsadmin"             # Nom d'utilisateur administrateur pour le VM
-VM_SIZE=""                           # Taille de la VM (sélectionnée interactivement selon la région)
-DISK_SKU=""                          # SKU disque (sélectionné interactivement)
+VM_SIZE=""                           # Taille de la VM (choisie à chaque région)
+DISK_SKU="Standard_LRS"              # Disque HDD standard
 
 # Noms des ressources Azure
 RG_NAME="${BASENAME}-rg"             # Resource Group
@@ -102,6 +102,130 @@ stop_vm() {
   exit 0
 }
 
+# Script d'installation Docker pour Ubuntu. Le mode "log" redirige la sortie
+# vers /tmp/docker-install.log (cloud-init). Sans argument, la sortie reste visible.
+docker_setup_script() {
+  local log_mode="${1:-}"
+  cat << EOF
+#!/bin/bash
+set -euxo pipefail
+EOF
+  if [ "$log_mode" = "log" ]; then
+    echo "exec > /tmp/docker-install.log 2>&1"
+  fi
+  cat << EOF
+echo "Starting Docker installation..."
+
+apt-get update
+apt-get install -y ca-certificates curl
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+. /etc/os-release
+echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+systemctl enable docker
+systemctl start docker
+usermod -aG docker ${ADMIN_USER}
+
+echo "Docker installation completed successfully"
+EOF
+}
+
+ssh_vm() {
+  ssh -i "$SSH_KEY_PATH" \
+    -o StrictHostKeyChecking=accept-new \
+    -o ConnectTimeout=15 \
+    -o BatchMode=yes \
+    "${ADMIN_USER}@${PUBLIC_IP}" "$@"
+}
+
+# ============================================= Installation Docker sur une VM existante =============================================
+install_docker_on_vm() {
+  local power docker_rc version attempt
+
+  echo ""
+  echo "=========================================="
+  echo "🐳 Installation de Docker sur : $VM_NAME"
+  echo "=========================================="
+
+  if [ ! -f "$SSH_KEY_PATH" ]; then
+    echo "❌ Clé SSH introuvable : $SSH_KEY_PATH"
+    echo "   La VM doit avoir été créée avec cette clé."
+    exit 1
+  fi
+
+  if ! az vm show --resource-group "$RG_NAME" --name "$VM_NAME" --output none 2>/dev/null; then
+    echo "❌ La VM '$VM_NAME' est introuvable dans le groupe '$RG_NAME'."
+    exit 1
+  fi
+
+  power=$(az vm get-instance-view \
+    --resource-group "$RG_NAME" \
+    --name "$VM_NAME" \
+    --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+    -o tsv 2>/dev/null | tr -d '\r' || true)
+  if [ "$power" != "PowerState/running" ]; then
+    echo "❌ La VM n'est pas démarrée (état : ${power:-inconnu})."
+    echo "   Lancez d'abord : $0 --start"
+    exit 1
+  fi
+
+  PUBLIC_IP=$(az network public-ip show \
+    --resource-group "$RG_NAME" \
+    --name "$PUBLIC_IP_NAME" \
+    --query ipAddress -o tsv 2>/dev/null | tr -d '\r' || true)
+  if [ -z "$PUBLIC_IP" ]; then
+    echo "❌ Impossible de lire l'IP publique '$PUBLIC_IP_NAME'."
+    exit 1
+  fi
+
+  echo "==> Connexion SSH à $ADMIN_USER@$PUBLIC_IP"
+  attempt=1
+  while [ "$attempt" -le 6 ]; do
+    if ssh_vm "true"; then
+      break
+    fi
+    if [ "$attempt" -eq 6 ]; then
+      echo "❌ SSH indisponible sur $PUBLIC_IP après 6 tentatives."
+      exit 1
+    fi
+    echo "SSH pas encore disponible (${attempt}/6)..."
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+
+  set +e
+  ssh_vm "command -v docker >/dev/null 2>&1"
+  docker_rc=$?
+  set -e
+
+  if [ "$docker_rc" -eq 0 ]; then
+    version=$(ssh_vm "docker --version" | tr -d '\r' || true)
+    echo "✓ Docker est déjà installé${version:+ ($version)}."
+    exit 0
+  fi
+  if [ "$docker_rc" -ne 1 ]; then
+    echo "❌ Impossible de vérifier la présence de Docker (code SSH $docker_rc)."
+    exit 1
+  fi
+
+  echo "==> Docker est absent. Installation en cours..."
+  if ! docker_setup_script | ssh_vm "sudo bash -s"; then
+    echo "❌ Échec de l'installation de Docker."
+    exit 1
+  fi
+
+  version=$(ssh_vm "docker --version" | tr -d '\r' || true)
+  echo "✓ Docker installé${version:+ ($version)}."
+  echo "  Reconnectez-vous en SSH pour utiliser docker sans sudo."
+  exit 0
+}
+
 # ============================================= Fonction pour démarrer la VM =============================================
 start_vm() {
   echo ""
@@ -128,6 +252,7 @@ Options:
   --regenerate-ssh-key  Régénère la paire de clés $SSH_KEY_PATH
   --start     Démarre la VM existante
   --stop      Arrête la VM existante
+  --docker_install  Installe Docker sur la VM si ce n'est pas déjà fait
 EOF
 }
 
@@ -147,7 +272,7 @@ for arg in "$@"; do
     --regenerate-ssh-key)
       REGENERATE_SSH_KEY=1
       ;;
-    --cleanup|--start|--stop)
+    --cleanup|--start|--stop|--docker_install)
       if [ -n "$REQUESTED_ACTION" ] && [ "$REQUESTED_ACTION" != "$arg" ]; then
         echo "❌ Options incompatibles : '$REQUESTED_ACTION' et '$arg'."
         echo "Utilisez une seule action à la fois."
@@ -178,6 +303,9 @@ case "$REQUESTED_ACTION" in
     ;;
   --stop)
     stop_vm
+    ;;
+  --docker_install)
+    install_docker_on_vm
     ;;
 esac
 
@@ -332,208 +460,395 @@ if [ ${#POLICY_REGIONS[@]} -eq 0 ]; then
   exit 1
 fi
 
-# ============================================= Sélection interactive de la région =============================================
-echo "Régions autorisées par Azure :"
+# ============================================= Bascule de région =============================================
+# Codes de retour des étapes :
+#   0  = succès
+#   10 = recommencer la région actuelle
+#   20 = passer à la région suivante
+MAX_REGION_RESTARTS=4
+
+echo "Régions autorisées par Azure Policy (essai dans cet ordre) :"
 for i in "${!POLICY_REGIONS[@]}"; do
   region_clean="${POLICY_REGIONS[$i]}"
-  [ "$os" = "Windows" ] && region_clean=$(echo "$region_clean" | tr -d '\r')
+  region_clean=$(echo "$region_clean" | tr -d '\r')
   printf "  [%2d] %s\n" "$((i+1))" "$region_clean"
 done
 echo ""
+echo "Disque : $DISK_SKU"
+echo ""
 
-while true; do
-  read -r -p "Choisissez une région (1-${#POLICY_REGIONS[@]}) [défaut: 1] : " region_choice
-  region_choice=${region_choice:-1}
-  if [[ "$region_choice" =~ ^[0-9]+$ ]] && [ "$region_choice" -ge 1 ] && [ "$region_choice" -le "${#POLICY_REGIONS[@]}" ]; then
-    LOCATION="${POLICY_REGIONS[$((region_choice-1))]}"
-    [ "$os" = "Windows" ] && LOCATION=$(echo "$LOCATION" | tr -d '\r')
-    break
+delete_rg_if_present() {
+  if ! az group show --name "$RG_NAME" --output none 2>/dev/null; then
+    return 0
   fi
-  echo "❌ Choix invalide. Saisissez un nombre entre 1 et ${#POLICY_REGIONS[@]}."
-done
 
-echo "✓ Région sélectionnée : $LOCATION"
-echo ""
-
-# ============================================= Sélection interactive de la taille VM =============================================
-echo "==> Récupération des tailles VM réellement déployables pour VOTRE abonnement dans '$LOCATION'..."
-echo "    (peut prendre 20-60 secondes — interroge list-skus + list-usage + list-sizes)"
-
-# 1) Toutes les entrées de quota : famille -> (currentValue, limit)
-#    On extrait en TSV puis on filtre en awk car Azure renvoie parfois `limit`
-#    en string, ce qui fait crasher la comparaison JMESPath `limit > \`0\``.
-USAGE_RAW=$(az vm list-usage \
-  --location "$LOCATION" \
-  --query "[].[name.value, currentValue, limit]" \
-  --output tsv 2>/dev/null | tr -d '\r' || true)
-
-if [ -z "$USAGE_RAW" ]; then
-  echo "❌ Impossible de récupérer les quotas pour '$LOCATION'."
-  exit 1
-fi
-
-# Quota régional total (Total Regional vCPUs) restant
-TOTAL_CORES_REMAINING=$(echo "$USAGE_RAW" | awk -F'\t' 'tolower($1)=="cores" {print ($3+0)-($2+0); exit}')
-TOTAL_CORES_REMAINING=${TOTAL_CORES_REMAINING:-0}
-
-if [ "$TOTAL_CORES_REMAINING" -le 0 ]; then
-  echo "❌ Quota régional total épuisé dans '$LOCATION' (Total Regional vCPUs = 0 restant)."
-  echo "   Demandez une augmentation de quota ou changez de région."
-  exit 1
-fi
-
-# 2) SKU déployables (sans restriction de type 'Location' / NotAvailableForSubscription).
-#    On garde celles qui ont uniquement des restrictions 'Zone' : elles sont bloquées
-#    pour des déploiements zonaux mais déployables sans --zone (ce que fait ce script).
-SKU_FAMILY_RAW=$(az vm list-skus \
-  --location "$LOCATION" \
-  --resource-type virtualMachines \
-  --query "[?length(restrictions[?type=='Location' && reasonCode=='NotAvailableForSubscription']) == \`0\`].[name, family]" \
-  --output tsv 2>/dev/null | tr -d '\r' || true)
-
-if [ -z "$SKU_FAMILY_RAW" ]; then
-  echo "❌ Aucune taille VM sans restriction dans '$LOCATION'."
-  exit 1
-fi
-
-# 3) Caractéristiques (vCPU/RAM) — filtre dimensionnel raisonnable
-SIZES_RAW=$(az vm list-sizes \
-  --location "$LOCATION" \
-  --query "[?numberOfCores>=\`2\` && numberOfCores<=\`8\` && memoryInMB>=\`4096\` && memoryInMB<=\`32768\`].[name, numberOfCores, memoryInMB]" \
-  --output tsv 2>/dev/null | tr -d '\r' || true)
-
-if [ -z "$SIZES_RAW" ]; then
-  echo "❌ Impossible de récupérer les caractéristiques des tailles VM."
-  exit 1
-fi
-
-# 4) Pour chaque taille : vérifier absence de restriction + cores ≤ quota famille
-#    + cores ≤ quota régional. C'est la condition pour que `az vm create` réussisse.
-SIZES_AVAILABLE=""
-while IFS=$'\t' read -r name cores memmb; do
-  [ -z "$name" ] && continue
-
-  # Quota régional total
-  if [ "$cores" -gt "$TOTAL_CORES_REMAINING" ]; then continue; fi
-
-  # Famille du SKU (et donc absence de restriction si trouvée)
-  family=$(echo "$SKU_FAMILY_RAW" | awk -F'\t' -v n="$name" '$1==n {print tolower($2); exit}')
-  [ -z "$family" ] && continue
-
-  # Quota restant pour la famille
-  fam_remaining=$(echo "$USAGE_RAW" | awk -F'\t' -v f="$family" 'tolower($1)==f {print ($3+0)-($2+0); exit}')
-  fam_remaining=${fam_remaining:-0}
-  if [ "$cores" -gt "$fam_remaining" ]; then continue; fi
-
-  SIZES_AVAILABLE+="${name}	${cores}	${memmb}	${fam_remaining}"$'\n'
-done <<< "$SIZES_RAW"
-
-if [ -z "$SIZES_AVAILABLE" ]; then
-  echo "❌ Aucune taille (2-8 vCPU, 4-32 GB) déployable dans '$LOCATION'."
-  echo "   Toutes les familles ont un quota restant insuffisant pour les cores requis."
-  echo "   Essayez une autre région."
-  exit 1
-fi
-
-# 4) Filtre familles courantes B/D/E/F (sinon fallback sur tout)
-SIZES_FILTERED=$(echo "$SIZES_AVAILABLE" | grep -E '^Standard_(B[0-9]|D[0-9]|E[0-9]|F[0-9])' | sort || true)
-
-if [ -z "$SIZES_FILTERED" ]; then
-  echo "⚠️  Aucune taille des familles B/D/E/F autorisée. Affichage de toutes les tailles autorisées."
-  SIZES_FILTERED=$(echo "$SIZES_AVAILABLE" | sort)
-fi
-
-SIZES=()
-while IFS=$'\t' read -r name cores memmb fam_rem; do
-  [ -n "$name" ] && SIZES+=("${name}|${cores}|${memmb}|${fam_rem}")
-done <<< "$SIZES_FILTERED"
-
-if [ ${#SIZES[@]} -eq 0 ]; then
-  echo "❌ Aucune taille VM compatible trouvée."
-  exit 1
-fi
-
-echo ""
-echo "Tailles VM déployables dans '$LOCATION' (quota régional restant : $TOTAL_CORES_REMAINING cores)"
-echo "(filtre : familles B/D/E/F, 2-8 vCPU, 4-32 GB RAM, quota famille suffisant)"
-printf "  %-4s %-30s %-8s %-10s %-18s\n" "#" "Nom" "vCPU" "RAM (GB)" "Quota famille"
-echo "  -----------------------------------------------------------------------"
-for i in "${!SIZES[@]}"; do
-  IFS='|' read -r s_name s_cores s_memmb s_fam <<< "${SIZES[$i]}"
-  s_mem_gb=$((s_memmb / 1024))
-  printf "  [%2d] %-30s %-8s %-10s %-18s\n" "$((i+1))" "$s_name" "$s_cores" "$s_mem_gb" "${s_fam} cores"
-done
-
-echo ""
-while true; do
-  read -r -p "Choisissez une taille (1-${#SIZES[@]}) ou tapez un nom 'Standard_*' [défaut: 1] : " size_choice
-  size_choice=${size_choice:-1}
-  if [[ "$size_choice" =~ ^[0-9]+$ ]] && [ "$size_choice" -ge 1 ] && [ "$size_choice" -le "${#SIZES[@]}" ]; then
-    IFS='|' read -r VM_SIZE _ _ _ <<< "${SIZES[$((size_choice-1))]}"
-    break
-  elif [[ "$size_choice" =~ ^Standard_ ]]; then
-    custom_cores=$(az vm list-sizes --location "$LOCATION" --query "[?name=='$size_choice'].numberOfCores" -o tsv 2>/dev/null | tr -d '\r')
-    if [ -z "$custom_cores" ]; then
-      echo "❌ Taille '$size_choice' inexistante dans '$LOCATION'."
-      continue
-    fi
-    custom_family=$(echo "$SKU_FAMILY_RAW" | awk -F'\t' -v n="$size_choice" '$1==n {print tolower($2); exit}')
-    if [ -z "$custom_family" ]; then
-      echo "❌ Taille '$size_choice' restreinte (NotAvailableForSubscription)."
-      continue
-    fi
-    custom_remaining=$(echo "$USAGE_RAW" | awk -F'\t' -v f="$custom_family" 'tolower($1)==f {print ($3+0)-($2+0); exit}')
-    custom_remaining=${custom_remaining:-0}
-    if [ "$custom_cores" -gt "$custom_remaining" ]; then
-      echo "❌ Quota famille insuffisant : $size_choice requiert $custom_cores cores, restant: $custom_remaining."
-      continue
-    fi
-    if [ "$custom_cores" -gt "$TOTAL_CORES_REMAINING" ]; then
-      echo "❌ Quota régional insuffisant : $size_choice requiert $custom_cores cores, restant: $TOTAL_CORES_REMAINING."
-      continue
-    fi
-    VM_SIZE="$size_choice"
-    break
-  else
-    echo "❌ Choix invalide."
+  echo "==> Suppression du groupe de ressources : $RG_NAME"
+  if ! az group delete --name "$RG_NAME" --yes --no-wait; then
+    echo "❌ Impossible de lancer la suppression de '$RG_NAME'."
+    return 1
   fi
-done
 
-echo "✓ Taille VM sélectionnée : $VM_SIZE"
-echo ""
+  echo "⏱ Attente de la suppression complète du Resource Group..."
+  while az group show --name "$RG_NAME" --output none 2>/dev/null; do
+    echo "Suppression en cours..."
+    sleep 10
+  done
+  echo "✓ Resource Group supprimé."
+  return 0
+}
 
-# ============================================= Sélection du SKU disque =============================================
-echo "Type de disque (SKU) :"
-echo "  [1] Standard_LRS     (HDD, économique)"
-echo "  [2] StandardSSD_LRS  (SSD standard, équilibré)"
-echo "  [3] Premium_LRS      (SSD haute performance, requiert taille avec suffixe 's')"
-read -r -p "Choisissez le SKU de disque (1-3) [défaut: 1] : " disk_choice
-disk_choice=${disk_choice:-1}
-case "$disk_choice" in
-  2) DISK_SKU="StandardSSD_LRS" ;;
-  3) DISK_SKU="Premium_LRS" ;;
-  *) DISK_SKU="Standard_LRS" ;;
-esac
+# 0 = une nouvelle tentative est autorisée, 1 = passer à la région suivante
+advance_region_attempt() {
+  if [ "$region_restarts" -ge "$MAX_REGION_RESTARTS" ]; then
+    echo "⚠️  Deux recommencements déjà effectués pour '$LOCATION'."
+    echo "   Passage à la région suivante."
+    return 1
+  fi
+  region_restarts=$((region_restarts + 1))
+  echo "↻ Recommencement de la région '$LOCATION' (${region_restarts}/${MAX_REGION_RESTARTS})..."
+  return 0
+}
 
-if [ "$DISK_SKU" = "Premium_LRS" ] && [[ "$VM_SIZE" != *s* ]]; then
-  echo "⚠️  La taille '$VM_SIZE' ne supporte pas Premium_LRS (pas de suffixe 's')."
-  echo "    Bascule automatique sur StandardSSD_LRS."
-  DISK_SKU="StandardSSD_LRS"
-fi
+# Remplit SIZES. 10 = lecture à recommencer, 20 = région inutilisable, 0 = tailles proposées.
+collect_deployable_sizes() {
+  SIZES=()
+  echo "==> Récupération des tailles VM réellement déployables pour VOTRE abonnement dans '$LOCATION'..."
+  echo "    (peut prendre 20-60 secondes — interroge list-skus + list-usage + list-sizes)"
 
-echo "✓ SKU de disque sélectionné : $DISK_SKU"
-echo ""
+  USAGE_RAW=$(az vm list-usage \
+    --location "$LOCATION" \
+    --query "[].[name.value, currentValue, limit]" \
+    --output tsv 2>/dev/null | tr -d '\r' || true)
 
-echo "=========================================="
-echo "Configuration de déploiement :"
-echo "  Région      : $LOCATION"
-echo "  Taille VM   : $VM_SIZE"
-echo "  Stockage    : $DISK_SKU"
-echo "  Abonnement  : $(az account show --query name -o tsv)"
-echo "  Subscription: $SUBSCRIPTION_ID"
-echo "=========================================="
-echo ""
-read -r -p "Appuyez sur Entrée pour confirmer et lancer le déploiement (Ctrl+C pour annuler)... " _
+  if [ -z "$USAGE_RAW" ]; then
+    echo "❌ Impossible de récupérer les quotas pour '$LOCATION'."
+    return 10
+  fi
+
+  TOTAL_CORES_REMAINING=$(echo "$USAGE_RAW" | awk -F'\t' 'tolower($1)=="cores" {print ($3+0)-($2+0); exit}')
+  TOTAL_CORES_REMAINING=${TOTAL_CORES_REMAINING:-0}
+
+  if [ "$TOTAL_CORES_REMAINING" -le 0 ]; then
+    echo "❌ Quota régional total épuisé dans '$LOCATION' (Total Regional vCPUs = 0 restant)."
+    return 20
+  fi
+
+  SKU_FAMILY_RAW=$(az vm list-skus \
+    --location "$LOCATION" \
+    --resource-type virtualMachines \
+    --query "[?length(restrictions[?type=='Location' && reasonCode=='NotAvailableForSubscription']) == \`0\`].[name, family]" \
+    --output tsv 2>/dev/null | tr -d '\r' || true)
+
+  if [ -z "$SKU_FAMILY_RAW" ]; then
+    echo "❌ Impossible de récupérer les tailles VM sans restriction dans '$LOCATION'."
+    return 10
+  fi
+
+  SIZES_RAW=$(az vm list-sizes \
+    --location "$LOCATION" \
+    --query "[?numberOfCores>=\`2\` && numberOfCores<=\`8\` && memoryInMB>=\`4096\` && memoryInMB<=\`32768\`].[name, numberOfCores, memoryInMB]" \
+    --output tsv 2>/dev/null | tr -d '\r' || true)
+
+  if [ -z "$SIZES_RAW" ]; then
+    echo "❌ Impossible de récupérer les caractéristiques des tailles VM dans '$LOCATION'."
+    return 10
+  fi
+
+  SIZES_AVAILABLE=""
+  while IFS=$'\t' read -r name cores memmb; do
+    [ -z "$name" ] && continue
+    if [ "$cores" -gt "$TOTAL_CORES_REMAINING" ]; then continue; fi
+
+    family=$(echo "$SKU_FAMILY_RAW" | awk -F'\t' -v n="$name" '$1==n {print tolower($2); exit}')
+    [ -z "$family" ] && continue
+
+    fam_remaining=$(echo "$USAGE_RAW" | awk -F'\t' -v f="$family" 'tolower($1)==f {print ($3+0)-($2+0); exit}')
+    fam_remaining=${fam_remaining:-0}
+    if [ "$cores" -gt "$fam_remaining" ]; then continue; fi
+
+    SIZES_AVAILABLE+="${name}	${cores}	${memmb}	${fam_remaining}"$'\n'
+  done <<< "$SIZES_RAW"
+
+  if [ -z "$SIZES_AVAILABLE" ]; then
+    echo "❌ Aucune taille (2-8 vCPU, 4-32 GB) déployable dans '$LOCATION'."
+    echo "   Toutes les familles ont un quota restant insuffisant pour les cores requis."
+    return 20
+  fi
+
+  SIZES_FILTERED=$(echo "$SIZES_AVAILABLE" | grep -E '^Standard_(B[0-9]|D[0-9]|E[0-9]|F[0-9])' | sort || true)
+
+  if [ -z "$SIZES_FILTERED" ]; then
+    echo "⚠️  Aucune taille des familles B/D/E/F autorisée. Affichage de toutes les tailles autorisées."
+    SIZES_FILTERED=$(echo "$SIZES_AVAILABLE" | sort)
+  fi
+
+  SIZES=()
+  while IFS=$'\t' read -r name cores memmb fam_rem; do
+    [ -n "$name" ] && SIZES+=("${name}|${cores}|${memmb}|${fam_rem}")
+  done <<< "$SIZES_FILTERED"
+
+  if [ ${#SIZES[@]} -eq 0 ]; then
+    echo "❌ Aucune taille VM compatible trouvée dans '$LOCATION'."
+    return 20
+  fi
+
+  echo ""
+  echo "Tailles VM déployables dans '$LOCATION' (quota régional restant : $TOTAL_CORES_REMAINING cores)"
+  echo "(filtre : familles B/D/E/F, 2-8 vCPU, 4-32 GB RAM, quota famille suffisant)"
+  printf "  %-4s %-30s %-8s %-10s %-18s\n" "#" "Nom" "vCPU" "RAM (GB)" "Quota famille"
+  echo "  -----------------------------------------------------------------------"
+  for i in "${!SIZES[@]}"; do
+    IFS='|' read -r s_name s_cores s_memmb s_fam <<< "${SIZES[$i]}"
+    s_mem_gb=$((s_memmb / 1024))
+    printf "  [%2d] %-30s %-8s %-10s %-18s\n" "$((i+1))" "$s_name" "$s_cores" "$s_mem_gb" "${s_fam} cores"
+  done
+  echo ""
+  return 0
+}
+
+prompt_vm_size() {
+  while true; do
+    read -r -p "Choisissez une taille (1-${#SIZES[@]}) ou tapez un nom 'Standard_*' [défaut: 1] : " size_choice
+    size_choice=${size_choice:-1}
+    if [[ "$size_choice" =~ ^[0-9]+$ ]] && [ "$size_choice" -ge 1 ] && [ "$size_choice" -le "${#SIZES[@]}" ]; then
+      IFS='|' read -r VM_SIZE _ _ _ <<< "${SIZES[$((size_choice-1))]}"
+      break
+    elif [[ "$size_choice" =~ ^Standard_ ]]; then
+      custom_cores=$(az vm list-sizes --location "$LOCATION" --query "[?name=='$size_choice'].numberOfCores" -o tsv 2>/dev/null | tr -d '\r' || true)
+      if [ -z "$custom_cores" ]; then
+        echo "❌ Taille '$size_choice' inexistante dans '$LOCATION'."
+        continue
+      fi
+      custom_family=$(echo "$SKU_FAMILY_RAW" | awk -F'\t' -v n="$size_choice" '$1==n {print tolower($2); exit}')
+      if [ -z "$custom_family" ]; then
+        echo "❌ Taille '$size_choice' restreinte (NotAvailableForSubscription)."
+        continue
+      fi
+      custom_remaining=$(echo "$USAGE_RAW" | awk -F'\t' -v f="$custom_family" 'tolower($1)==f {print ($3+0)-($2+0); exit}')
+      custom_remaining=${custom_remaining:-0}
+      if [ "$custom_cores" -gt "$custom_remaining" ]; then
+        echo "❌ Quota famille insuffisant : $size_choice requiert $custom_cores cores, restant: $custom_remaining."
+        continue
+      fi
+      if [ "$custom_cores" -gt "$TOTAL_CORES_REMAINING" ]; then
+        echo "❌ Quota régional insuffisant : $size_choice requiert $custom_cores cores, restant: $TOTAL_CORES_REMAINING."
+        continue
+      fi
+      VM_SIZE="$size_choice"
+      break
+    else
+      echo "❌ Choix invalide."
+    fi
+  done
+
+  echo "✓ Taille VM sélectionnée : $VM_SIZE"
+  echo ""
+}
+
+# 0 = RG prêt, 10 = recommencer la région
+prepare_resource_group() {
+  if az group show --name "$RG_NAME" --output none 2>/dev/null; then
+    EXISTING_LOC=$(az group show --name "$RG_NAME" --query location -o tsv | tr -d '\r')
+    echo "✓ RG existant trouvé en région : $EXISTING_LOC"
+    if [ "$EXISTING_LOC" != "$LOCATION" ]; then
+      echo "Conflit de région. Suppression du RG avant recréation..."
+      if ! delete_rg_if_present; then
+        return 10
+      fi
+    else
+      echo "✓ RG en bonne région, on continue"
+      return 0
+    fi
+  fi
+
+  echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
+  if ! az group create --name "$RG_NAME" --location "$LOCATION" --output none; then
+    echo "❌ Erreur lors de la création du groupe de ressources."
+    return 10
+  fi
+  echo "✓ Resource Group prêt"
+  return 0
+}
+
+# 0 = réseau prêt, 10 = recommencer la région
+create_network() {
+  echo ""
+  echo "==> Création VNet/Subnet"
+  if ! az network vnet create \
+    --resource-group "$RG_NAME" \
+    --name "$VNET_NAME" \
+    --location "$LOCATION" \
+    --address-prefix 10.0.0.0/16 \
+    --subnet-name "$SUBNET_NAME" \
+    --subnet-prefix 10.0.0.0/24 \
+    -o none; then
+    echo "❌ Erreur lors de la création du VNet/Subnet"
+    return 10
+  fi
+
+  echo "==> Création NSG"
+  if ! az network nsg create \
+    --resource-group "$RG_NAME" \
+    --name "$NSG_NAME" \
+    --location "$LOCATION" \
+    -o none; then
+    echo "❌ Erreur lors de la création du NSG"
+    return 10
+  fi
+
+  echo "  ⏳ Attente de la propagation du NSG..."
+  NSG_READY=0
+  for _ in $(seq 1 30); do
+    if az network nsg show --resource-group "$RG_NAME" --name "$NSG_NAME" --output none 2>/dev/null; then
+      NSG_READY=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$NSG_READY" -eq 0 ]; then
+    echo "❌ NSG '$NSG_NAME' introuvable après 60 secondes."
+    return 10
+  fi
+
+  echo "==> Création de la règle NSG SSH (port 22)"
+  if ! az network nsg rule create \
+    --resource-group "$RG_NAME" \
+    --nsg-name "$NSG_NAME" \
+    --name AllowSSH \
+    --priority 1000 \
+    --source-address-prefixes '*' \
+    --destination-port-ranges 22 \
+    --protocol Tcp \
+    --access Allow \
+    -o none; then
+    echo "❌ Erreur création règle AllowSSH"
+    return 10
+  fi
+
+  echo "==> Création IP publique (Standard/Statique)"
+  if ! az network public-ip create \
+    --resource-group "$RG_NAME" \
+    --name "$PUBLIC_IP_NAME" \
+    --location "$LOCATION" \
+    --sku Standard \
+    --allocation-method Static \
+    -o none; then
+    echo "❌ Erreur création IP publique"
+    return 10
+  fi
+
+  echo "==> Création NIC (attachement NSG + IP publique)"
+  if ! az network nic create \
+    --resource-group "$RG_NAME" \
+    --name "$NIC_NAME" \
+    --location "$LOCATION" \
+    --vnet-name "$VNET_NAME" \
+    --subnet "$SUBNET_NAME" \
+    --public-ip-address "$PUBLIC_IP_NAME" \
+    --network-security-group "$NSG_NAME" \
+    -o none; then
+    echo "❌ Erreur création NIC"
+    return 10
+  fi
+
+  return 0
+}
+
+# Cloud-init Ubuntu 24.04 : Docker uniquement, sans n8n.
+write_docker_cloud_init() {
+  CLOUD_INIT_FILE=$(mktemp 2>/dev/null || echo "${TMP:-${TEMP:-/tmp}}/cloud-init-$$.yaml")
+  {
+    cat << 'YAML'
+#cloud-config
+package_update: true
+package_upgrade: true
+
+write_files:
+  - path: /tmp/setup-docker.sh
+    permissions: '0755'
+    content: |
+YAML
+    docker_setup_script log | sed 's/^/      /'
+    printf '\nruncmd:\n  - /tmp/setup-docker.sh\n'
+  } > "$CLOUD_INIT_FILE"
+}
+
+cleanup_cloud_init() {
+  if [ -n "${CLOUD_INIT_FILE:-}" ]; then
+    rm -f "$CLOUD_INIT_FILE"
+  fi
+}
+
+# 0 = VM créée, 20 = passer à la région suivante
+create_vm() {
+  echo ""
+  echo "==> Création VM : $VM_NAME"
+  if ! az vm create \
+    --resource-group "$RG_NAME" \
+    --name "$VM_NAME" \
+    --location "$LOCATION" \
+    --nics "$NIC_NAME" \
+    --image "Canonical:ubuntu-24_04-lts:server:latest" \
+    --size "$VM_SIZE" \
+    --admin-username "$ADMIN_USER" \
+    --ssh-key-values "$SSH_PUB_KEY_PATH" \
+    --storage-sku "$DISK_SKU" \
+    --custom-data "$CLOUD_INIT_FILE" \
+    -o none; then
+    echo "❌ Erreur lors de la création de la VM dans '$LOCATION' (taille $VM_SIZE)."
+    return 20
+  fi
+  return 0
+}
+
+retry_region_after_cleanup() {
+  if ! delete_rg_if_present; then
+    echo "❌ La suppression du groupe de ressources a échoué."
+  fi
+  if ! advance_region_attempt; then
+    return 1
+  fi
+  return 0
+}
+
+print_deploy_success() {
+  PUBLIC_IP=$(az network public-ip show \
+    --resource-group "$RG_NAME" \
+    --name "$PUBLIC_IP_NAME" \
+    --query ipAddress -o tsv 2>/dev/null | tr -d '\r' || true)
+
+  echo ""
+  echo "=========================================="
+  echo "✅ Déploiement terminé avec succès !"
+  echo "=========================================="
+  echo ""
+  echo "📦 Ressources créées :"
+  echo "  Resource Group : $RG_NAME"
+  echo "  VM             : $VM_NAME"
+  echo "  Taille         : $VM_SIZE"
+  echo "  Région         : $LOCATION"
+  echo "  IP Publique    : ${PUBLIC_IP:-inconnue}"
+  echo ""
+  echo "📢 Commandes utiles :"
+  echo "  Pour supprimer toutes les ressources :"
+  echo "    $0 --cleanup [--force]"
+  echo "  Pour arrêter la VM sans supprimer l'infrastructure :"
+  echo "    $0 --stop"
+  echo "  Pour redémarrer la VM arrêtée :"
+  echo "    $0 --start"
+  echo "  Pour installer Docker si ce n'est pas déjà fait :"
+  echo "    $0 --docker_install"
+  echo ""
+  echo "🔗 Accès :"
+  echo "  SSH (port 22) : ssh -i $SSH_KEY_PATH $ADMIN_USER@${PUBLIC_IP:-<ip>}"
+  echo ""
+  echo "Docker est installé au premier démarrage (cloud-init), sans n8n."
+  echo "  Suivi : ssh -i $SSH_KEY_PATH $ADMIN_USER@${PUBLIC_IP:-<ip>} 'sudo tail -f /var/log/cloud-init-output.log'"
+  echo ""
+  echo "🔒 Sécurité :"
+  echo "  ⚠ NSG SSH ouvert à tous (*) - À restreindre en production !"
+  echo ""
+}
 
 generate_ssh_key() {
   SSH_KEY_DIR=$(dirname "$SSH_KEY_PATH")
@@ -578,254 +893,106 @@ if [ ! -f "$SSH_PUB_KEY_PATH" ]; then
   exit 1
 fi
 
-echo "==> Vérification du groupe de ressources : $RG_NAME"
-
-if az group show --name "$RG_NAME" --output none 2>/dev/null; then
-  EXISTING_LOC=$(az group show --name "$RG_NAME" --query location -o tsv)
-  echo "✓ RG existant trouvé en région : $EXISTING_LOC"
-  if [ "$EXISTING_LOC" != "$LOCATION" ]; then
-    echo "❌ Conflit de région détecté ! Suppression du RG..."
-    az group delete --name "$RG_NAME" --yes --no-wait
-    echo "⏱ Attente suppression complète du RG..."
-    while az group show --name "$RG_NAME" --output none 2>/dev/null; do
-      echo "Suppression en cours..."
-      sleep 10
-    done
-    echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
-    az group create --name "$RG_NAME" --location "$LOCATION" --output none
-  else
-    echo "✓ RG en bonne région, on continue"
-  fi
-else
-  echo "==> Création du groupe de ressources : $RG_NAME ($LOCATION)"
-  az group create --name "$RG_NAME" --location "$LOCATION" --output none
+if az vm show --resource-group "$RG_NAME" --name "$VM_NAME" --output none 2>/dev/null; then
+  echo "ℹ️ La VM '$VM_NAME' existe déjà. Aucune création supplémentaire."
+  LOCATION=$(az vm show --resource-group "$RG_NAME" --name "$VM_NAME" --query location -o tsv | tr -d '\r')
+  VM_SIZE=$(az vm show --resource-group "$RG_NAME" --name "$VM_NAME" --query hardwareProfile.vmSize -o tsv | tr -d '\r')
+  print_deploy_success
+  exit 0
 fi
 
-echo "✓ Resource Group prêt"
+ACCOUNT_NAME=$(az account show --query name -o tsv)
 
-CLOUD_INIT_YAML=$(cat << 'CLOUDEOF'
-#cloud-config
-package_update: true
-package_upgrade: true
+CLOUD_INIT_FILE=""
+trap cleanup_cloud_init EXIT
+write_docker_cloud_init
 
-packages:
-  - ca-certificates
-  - curl
-  - gnupg
+for raw_region in "${POLICY_REGIONS[@]}"; do
+  LOCATION=$(echo "$raw_region" | tr -d '\r')
+  region_restarts=0
 
-write_files:
-  - path: /tmp/setup-docker.sh
-    permissions: '0755'
-    content: |
-      #!/bin/bash
-      set -euxo pipefail
-      exec > /tmp/docker-install.log 2>&1
+  while true; do
+    echo ""
+    echo "=========================================="
+    echo "Région en cours : $LOCATION"
+    echo "=========================================="
+    echo ""
 
-      echo "Starting Docker installation..."
+    set +e
+    collect_deployable_sizes
+    size_rc=$?
+    set -e
 
-      mkdir -p /etc/apt/keyrings
-      curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-      chmod a+r /etc/apt/keyrings/docker.gpg
+    if [ "$size_rc" -eq 20 ]; then
+      echo "Passage à la région suivante."
+      break
+    fi
+    if [ "$size_rc" -eq 10 ]; then
+      if ! advance_region_attempt; then
+        break
+      fi
+      continue
+    fi
+    if [ "$size_rc" -ne 0 ]; then
+      echo "❌ Résultat inattendu lors de la lecture des tailles (code $size_rc)."
+      if ! advance_region_attempt; then
+        break
+      fi
+      continue
+    fi
 
-      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bullseye stable" > /etc/apt/sources.list.d/docker.list
+    prompt_vm_size
 
-      apt-get update
-      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    echo "=========================================="
+    echo "Configuration de déploiement :"
+    echo "  Région      : $LOCATION"
+    echo "  Taille VM   : $VM_SIZE"
+    echo "  Stockage    : $DISK_SKU"
+    echo "  Abonnement  : $ACCOUNT_NAME"
+    echo "  Subscription: $SUBSCRIPTION_ID"
+    echo "=========================================="
+    echo ""
 
-      systemctl enable docker
-      systemctl start docker
+    set +e
+    prepare_resource_group
+    rg_rc=$?
+    set -e
+    if [ "$rg_rc" -ne 0 ]; then
+      if ! retry_region_after_cleanup; then
+        break
+      fi
+      continue
+    fi
 
-      usermod -aG docker devopsadmin
+    set +e
+    create_network
+    net_rc=$?
+    set -e
+    if [ "$net_rc" -ne 0 ]; then
+      echo "Échec de la préparation réseau dans '$LOCATION'."
+      if ! retry_region_after_cleanup; then
+        break
+      fi
+      continue
+    fi
 
-      sleep 5
+    set +e
+    create_vm
+    vm_rc=$?
+    set -e
+    if [ "$vm_rc" -ne 0 ]; then
+      echo "La VM n'a pas pu être créée dans '$LOCATION'. Passage à la région suivante."
+      if ! delete_rg_if_present; then
+        echo "❌ La suppression du groupe de ressources a échoué."
+      fi
+      break
+    fi
 
-      docker run -d --name n8n -p 5678:5678 \
-        -e N8N_SECURE_COOKIE=false \
-        -v n8n:/home/node/.n8n \
-        --restart unless-stopped \
-        n8nio/n8n
-
-      echo "Installation completed successfully"
-
-runcmd:
-  - /tmp/setup-docker.sh
-
-CLOUDEOF
-)
-
-# Écriture du cloud-init dans un fichier temporaire (compatible macOS et Windows/Git Bash)
-CLOUD_INIT_FILE=$(mktemp 2>/dev/null || echo "${TMP:-${TEMP:-/tmp}}/cloud-init-$$.yaml")
-echo "$CLOUD_INIT_YAML" > "$CLOUD_INIT_FILE"
-trap 'rm -f "$CLOUD_INIT_FILE"' EXIT
-
-echo ""
-echo "==> Création VNet/Subnet"
-if ! az network vnet create \
-  --resource-group "$RG_NAME" \
-  --name "$VNET_NAME" \
-  --location "$LOCATION" \
-  --address-prefix 10.0.0.0/16 \
-  --subnet-name "$SUBNET_NAME" \
-  --subnet-prefix 10.0.0.0/24 \
-  -o none; then
-  echo "Erreur lors de la création du VNet/Subnet"
-  exit 1
-fi
-
-echo "==> Création NSG"
-if ! az network nsg create \
-  --resource-group "$RG_NAME" \
-  --name "$NSG_NAME" \
-  --location "$LOCATION" \
-  -o none; then
-  echo "Erreur lors de la création du NSG"
-  exit 1
-fi
-
-# Attente de la propagation ARM : le NSG peut renvoyer "created" mais ne pas être
-# immédiatement visible pour les commandes suivantes (eventual consistency)
-echo "  ⏳ Attente de la propagation du NSG..."
-NSG_READY=0
-for i in $(seq 1 30); do
-  if az network nsg show --resource-group "$RG_NAME" --name "$NSG_NAME" --output none 2>/dev/null; then
-    NSG_READY=1
-    break
-  fi
-  sleep 2
-done
-if [ "$NSG_READY" -eq 0 ]; then
-  echo "❌ NSG '$NSG_NAME' introuvable après 60 secondes."
-  exit 1
-fi
-
-echo "==> Création règles NSG (SSH 22, n8n 5678)"
-az network nsg rule create \
-  --resource-group "$RG_NAME" \
-  --nsg-name "$NSG_NAME" \
-  --name AllowSSH \
-  --priority 1000 \
-  --source-address-prefixes '*' \
-  --destination-port-ranges 22  \
-  --protocol Tcp \
-  --access Allow \
-  -o none || { echo "Erreur création règle AllowSSH"; exit 1; }
-
-az network nsg rule create \
-  --resource-group "$RG_NAME" \
-  --nsg-name "$NSG_NAME" \
-  --name AllowN8N \
-  --priority 1010 \
-  --source-address-prefixes '*' \
-  --destination-port-ranges 5678 \
-  --protocol Tcp \
-  --access Allow \
-  -o none || { echo "Erreur création règle AllowN8N"; exit 1; }
-
-echo "==> Création IP publique (Standard/Statique)"
-if ! az network public-ip create \
-  --resource-group "$RG_NAME" \
-  --name "$PUBLIC_IP_NAME" \
-  --location "$LOCATION" \
-  --sku Standard \
-  --allocation-method Static \
-  -o none; then
-  echo "Erreur création IP publique"
-  exit 1
-fi
-
-echo "==> Création NIC (attachement NSG + IP publique)"
-if ! az network nic create \
-  --resource-group "$RG_NAME" \
-  --name "$NIC_NAME" \
-  --location "$LOCATION" \
-  --vnet-name "$VNET_NAME" \
-  --subnet "$SUBNET_NAME" \
-  --public-ip-address "$PUBLIC_IP_NAME" \
-  --network-security-group "$NSG_NAME" \
-  -o none; then
-  echo "Erreur création NIC"
-  exit 1
-fi
-
-# Si la CLI est installé, y a pas de raison de vérifier l'OS
-# case "$os" in
-#   macOS|Windows) ;;
-#   *)
-#     echo "OS non supporté pour la création automatique de VM."
-#     exit 1
-#     ;;
-# esac
-
-echo ""
-echo "==> Création VM : $VM_NAME"
-if ! az vm create \
-  --resource-group "$RG_NAME" \
-  --name "$VM_NAME" \
-  --location "$LOCATION" \
-  --nics "$NIC_NAME" \
-  --image "Canonical:ubuntu-24_04-lts:server:latest" \
-  --size "$VM_SIZE" \
-  --admin-username "$ADMIN_USER" \
-  --ssh-key-values "$SSH_PUB_KEY_PATH" \
-  --storage-sku "$DISK_SKU" \
-  --custom-data "$CLOUD_INIT_FILE" \
-  -o none; then
-  echo "Erreur lors de la création de la VM sur $os"
-  exit 1
-fi
-
-PUBLIC_IP=$(az network public-ip show \
-  --resource-group "$RG_NAME" \
-  --name "$PUBLIC_IP_NAME" \
-  --query ipAddress -o tsv)
-
-echo ""
-echo "=========================================="
-echo "✅ Déploiement terminé avec succès !"
-echo "=========================================="
-echo ""
-echo "📦 Ressources créées :"
-echo "  Resource Group : $RG_NAME"
-echo "  VM             : $VM_NAME ($VM_SIZE)"
-echo "  Région         : $LOCATION"
-echo "  IP Publique    : $PUBLIC_IP"
-echo ""
-
-echo "⏳ Attente de la disponibilité de n8n..."
-MAX_RETRIES=180
-RETRY_COUNT=0
-while true; do
-  if curl -s --fail --connect-timeout 5 "http://$PUBLIC_IP:5678" >/dev/null; then
-    echo "✓ Le service est prêt pour utilisation."
-    break
-  fi
-  RETRY_COUNT=$((RETRY_COUNT + 1))
-  if [ "$RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
-    echo "⚠️ Timeout : n8n n'a pas répondu."
-    break
-  fi
-  echo "En attente..."
-  sleep 20
+    print_deploy_success
+    exit 0
+  done
 done
 
-# ============================================= Affichage des commandes d'usage =============================================
 echo ""
-echo "📢 Commandes utiles :"
-echo "  Pour supprimer toutes les ressources :"
-echo "    $0 --cleanup [--force]"
-echo "  Pour arrêter la VM sans supprimer l'infrastructure :"
-echo "    $0 --stop"
-echo "  Pour redémarrer la VM arrêtée :"
-echo "    $0 --start"
-echo ""
-echo "🔗 Accès :"
-echo "  n8n Interface : http://$PUBLIC_IP:5678"
-echo "  SSH (port 22) : ssh -i $SSH_KEY_PATH $ADMIN_USER@$PUBLIC_IP"
-echo ""
-echo "  Suivi des logs : ssh -i $SSH_KEY_PATH $ADMIN_USER@$PUBLIC_IP 'sudo tail -f /var/log/cloud-init-output.log'"
-echo ""
-echo "🔒 Sécurité :"
-echo "  ⚠ NSG ouvert à tous (*) - À restreindre en production !"
-echo "  ⚠ Credentials en clair - À changer immédiatement !"
-echo "  ⚠ Pas de HTTPS - À configurer avec reverse proxy + Let's Encrypt"
-echo ""
+echo "❌ Aucune région autorisée n'a permis de créer la VM '$VM_NAME'."
+exit 1

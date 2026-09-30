@@ -51,8 +51,8 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 
 | Script | Description |
 |--------|-------------|
-| `0_create_vm.sh` | Crée l’infrastructure Azure (RG, réseau, NSG, IP, VM), gère `--start`, `--stop`, `--cleanup` |
-| `1_deploy_n8n_azure.sh` | Déploie n8n sur la VM Azure |
+| `0_create_vm.sh` | Crée l’infrastructure Azure (RG, réseau, NSG SSH, IP, VM), gère `--start`, `--stop`, `--cleanup` |
+| `1_create_and_deploy_n8n_azure.sh` | Crée une VM et déploie n8n |
 | `2_config_n8n.sh` | Configure n8n (owner, clé API, import de workflows) |
 
 ---
@@ -64,14 +64,15 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 - Vérifie et installe Azure CLI sur le pc hôte (local) si nécessaire
 - Authentifie l'utilisateur sur Azure
 - Récupère la liste des régions autorisées via la politique Azure
+- Parcourt ces régions et propose, pour chacune, les tailles VM déployables
+- Recommence la région en cours si la lecture des quotas ou la création du réseau échoue (2 fois au plus)
+- Passe à la région suivante si aucune taille n'est déployable ou si la création de la VM échoue
 - Crée les ressources Azure nécessaires (Resource Group, réseau virtuel, sous-réseau, groupes de sécurité)
-- Configure les règles du groupe de sécurité pour ouvrir SSH (ports 22) et le port 5678 de n8n
+- Configure le groupe de sécurité pour ouvrir SSH (port 22)
 - Génère une paire de clés SSH locale pour la VM (`~/.ssh/azure_n8n`)
-- Crée une machine virtuelle Debian 11 avec cloud-init :
-  - Installe Docker
-  - Lance automatiquement un conteneur n8n avec authentification basique (admin/admin123)
-- Attend que le service n8n soit disponible sur le port 5678 de la VM
-- Affiche les informations d'accès (IP publique, SSH, credentials par défaut)
+- Crée une machine virtuelle Ubuntu 24.04 et installe Docker au premier démarrage, sans installer n8n
+- `./0_create_vm.sh --docker_install` installe Docker sur une VM déjà créée, seulement s'il est absent
+- Affiche le nom de la VM, la région, la taille, l'IP publique et la commande SSH
 
 ### Comment utiliser
 
@@ -91,9 +92,9 @@ Ces étapes vous permettront d’accéder facilement à un environnement cloud p
 5. Le script s'occupe de tout le déploiement
 
 6. À la fin, il affiche :
+- Le nom de la VM
 - L'adresse IP publique de la machine
 - Les accès SSH
-- L'URL n8n (ex: `http://<IP>:5678`)
 
 <img width="833" height="446" alt="Screenshot 2025-10-30 at 13 40 08" src="assets/fin-deploiement-acces.png" />
 
@@ -118,19 +119,19 @@ Pour supprimer toutes les ressources Azure et les clés SSH associées :
 
 ---
 
-## Script 2 – Déploiement n8n sur Azure (`1_deploy_n8n_azure.sh`)
+## Script 2 – Création de VM et déploiement n8n (`1_create_and_deploy_n8n_azure.sh`)
 
 ### Objectif
 
-Déployer n8n sur la VM Azure créée par le script `0_create_vm.sh`.
+Créer une VM Azure et y déployer n8n. Ce script est indépendant de `0_create_vm.sh`.
 
 ### Utilisation
 
 1. **Rendre le script exécutable :**
-`chmod +x 1_deploy_n8n_azure.sh`
+`chmod +x 1_create_and_deploy_n8n_azure.sh`
 
 2. **Lancer le script :**
-`./1_deploy_n8n_azure.sh`
+`./1_create_and_deploy_n8n_azure.sh`
 
 ---
 
@@ -208,9 +209,9 @@ Ce script crée la VM, le réseau et les ressources Azure nécessaires.
 ### Étape 2 : Déploiement de n8n
 
 Lancer le script de déploiement n8n :
-`./1_deploy_n8n_azure.sh`
+`./1_create_and_deploy_n8n_azure.sh`
 
-Ce script installe et démarre n8n sur la VM.
+Ce script crée une VM et y installe n8n.
 
 ### Étape 3 : Configuration
 
@@ -227,7 +228,7 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 ```sh
 /
 ├── 0_create_vm.sh             # Script 1 : crée l’infrastructure Azure (VM, réseau, sécurité)
-├── 1_deploy_n8n_azure.sh      # Script 2 : déploie n8n sur la VM
+├── 1_create_and_deploy_n8n_azure.sh      # Script 2 : crée une VM et déploie n8n
 ├── 2_config_n8n.sh            # Script 3 : configure n8n (owner, clé API, workflows)
 ├── workflow/                  # Dossier contenant les workflows JSON à importer
 │
@@ -248,7 +249,7 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 - Bash (Linux/macOS/WSL)
 - Connexion internet
 
-### Script 2 (`1_deploy_n8n_azure.sh`)
+### Script 2 (`1_create_and_deploy_n8n_azure.sh`)
 
 - Bash
 - `curl` (installé par défaut)
@@ -268,10 +269,11 @@ Ce script crée un utilisateur administrateur n8n sécurisé et gère les workfl
 | `./0_create_vm.sh` | Créer l’infrastructure Azure |
 | `./0_create_vm.sh --stop` | Arrêter la VM |
 | `./0_create_vm.sh --start` | Redémarrer la VM |
+| `./0_create_vm.sh --docker_install` | Installer Docker sur la VM si besoin |
 | `./0_create_vm.sh --cleanup` | Supprimer toutes les ressources Azure |
 | `./0_create_vm.sh --cleanup --force` | Supprimer sans confirmation |
-| `chmod +x 1_deploy_n8n_azure.sh` | Rendre le script de déploiement n8n exécutable |
-| `./1_deploy_n8n_azure.sh` | Déployer n8n sur la VM |
+| `chmod +x 1_create_and_deploy_n8n_azure.sh` | Rendre le script de création et déploiement n8n exécutable |
+| `./1_create_and_deploy_n8n_azure.sh` | Créer une VM et déployer n8n |
 | `chmod +x 2_config_n8n.sh` | Rendre le script de configuration n8n exécutable |
 | `./2_config_n8n.sh` | Configurer n8n (utilisateur, clé API, workflows) |
 
